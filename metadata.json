@@ -1,0 +1,6 @@
+{
+  "name": "v2rayDP",
+  "description": "High-performance V2Ray & VMess Android VPN client with Wi-Fi & Mobile automation, Quick Settings, Samsung Routines, and Hotspot proxy sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
