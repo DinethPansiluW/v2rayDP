@@ -59,7 +59,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -212,17 +217,6 @@ fun HomeScreen(
                             leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AccentCyan) },
                             onClick = { showAddMenu = false; onNavigateToQr() }
                         )
-                        HorizontalDivider(color = DarkSurfaceBorder)
-                        DropdownMenuItem(
-                            text = { Text("Add Manual VLESS Node", color = TextPrimary) },
-                            leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null, tint = AccentCyan) },
-                            onClick = { showAddMenu = false; onAddManualServer("vless") }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Add Manual VMess Node", color = TextPrimary) },
-                            leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null, tint = AccentCyan) },
-                            onClick = { showAddMenu = false; onAddManualServer("vmess") }
-                        )
                     }
                 }
             }
@@ -323,22 +317,9 @@ fun HomeScreen(
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         LatencyBadge(latencyMs = p.pingLatencyMs)
-                        OutlinedButton(
-                            onClick = { viewModel.testProfileLatency(p) },
-                            modifier = Modifier
-                                .height(32.dp)
-                                .testTag("ping_test_button"),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder)
-                        ) {
-                            Icon(Icons.Default.Speed, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Test Ping", fontSize = 11.sp, color = TextSecondary)
-                        }
                     }
                 } else {
                     Text("No server profile selected", color = TextSecondary)
@@ -402,305 +383,6 @@ fun HomeScreen(
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp
             )
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Background Execution & Permissions Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = DarkSurface)
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "BACKGROUND RUN & PERMISSIONS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextSecondary,
-                        letterSpacing = 1.sp
-                    )
-                    IconButton(
-                        onClick = { viewModel.refreshPermissionsState() },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = AccentCyan, modifier = Modifier.size(16.dp))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Row 1: Battery Optimization / Background Run
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Background Run",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = if (isBatteryIgnored) "Unrestricted • Will not be killed" else "Optimized • System may suspend VPN",
-                            fontSize = 11.sp,
-                            color = if (isBatteryIgnored) StatusConnected else StatusConnecting
-                        )
-                    }
-                    if (!isBatteryIgnored) {
-                        Button(
-                            onClick = onRequestBackgroundRun,
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = Color.Black),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                            modifier = Modifier
-                                .height(32.dp)
-                                .testTag("enable_background_run_button")
-                        ) {
-                            Text("Enable", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .background(StatusConnected.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text("Enabled", fontSize = 11.sp, color = StatusConnected, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-                HorizontalDivider(color = DarkSurfaceBorder, thickness = 0.8.dp)
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Row 2: Location Permission for SSID
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Wi-Fi SSID Permission",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = if (hasLocPerm) "Granted • Can read Wi-Fi network names" else "Required by Android to detect Wi-Fi SSIDs",
-                            fontSize = 11.sp,
-                            color = if (hasLocPerm) StatusConnected else TextSecondary
-                        )
-                    }
-                    if (!hasLocPerm) {
-                        Button(
-                            onClick = onRequestLocationPermission,
-                            colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant, contentColor = AccentCyan),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, AccentCyan),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                            modifier = Modifier
-                                .height(32.dp)
-                                .testTag("grant_location_button")
-                        ) {
-                            Text("Grant", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .background(StatusConnected.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text("Granted", fontSize = 11.sp, color = StatusConnected, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Live Traffic Statistics
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = DarkSurface)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "LIVE TRAFFIC STATISTICS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextSecondary,
-                        letterSpacing = 1.sp
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Timer, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = trafficStats.formattedDuration,
-                            fontSize = 12.sp,
-                            color = if (isRunning) StatusConnected else TextSecondary,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Download, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Download", fontSize = 11.sp, color = TextSecondary)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = trafficStats.formattedDownloadSpeed,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = "Total: ${trafficStats.formattedRxTotal}",
-                            fontSize = 10.sp,
-                            color = TextMuted
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .width(1.dp)
-                            .height(48.dp)
-                            .background(DarkSurfaceBorder)
-                    )
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Upload, contentDescription = null, tint = StatusConnecting, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Upload", fontSize = 11.sp, color = TextSecondary)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = trafficStats.formattedUploadSpeed,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = "Total: ${trafficStats.formattedTxTotal}",
-                            fontSize = 10.sp,
-                            color = TextMuted
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Live Network & Automation Status Card with "Evaluate Now" button
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = DarkSurface)
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "NETWORK & AUTOMATION MONITOR",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextSecondary,
-                        letterSpacing = 1.sp
-                    )
-                    IconButton(
-                        onClick = { viewModel.automationManager.forceEvaluateNow() },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = AccentCyan, modifier = Modifier.size(16.dp))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        if (isWifiConnected) Icons.Default.Wifi else Icons.Default.WifiOff,
-                        contentDescription = null,
-                        tint = if (isWifiConnected) AccentCyan else TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isWifiConnected) "Wi-Fi: ${currentSsid ?: "Active"}" else "Wi-Fi: Disconnected",
-                        fontSize = 13.sp,
-                        color = TextPrimary
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.CellTower,
-                        contentDescription = null,
-                        tint = if (isCellularConnected) StatusConnected else TextSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isCellularConnected) "Mobile Data: Active" else "Mobile Data: Standby",
-                        fontSize = 13.sp,
-                        color = TextPrimary
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = "Status: $lastAutomationStatus",
-                    fontSize = 11.sp,
-                    color = AccentCyan
-                )
-            }
         }
 
         Spacer(modifier = Modifier.height(18.dp))

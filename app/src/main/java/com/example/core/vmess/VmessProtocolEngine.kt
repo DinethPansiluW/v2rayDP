@@ -67,11 +67,10 @@ class VmessProtocolEngine(
 
         // TLS Handshake with "always allow insecure" trust manager
         if (profile.isTlsEnabled) {
-            val sslSocket = insecureSslSocketFactory.createSocket(rawSocket, profile.address, profile.port, true) as SSLSocket
             val sniHost = profile.sni.ifEmpty { profile.host.ifEmpty { profile.address } }
-            val params = SSLParameters().apply {
-                serverNames = listOf(SNIHostName(sniHost))
-            }
+            val sslSocket = insecureSslSocketFactory.createSocket(rawSocket, sniHost, profile.port, true) as SSLSocket
+            val params = sslSocket.sslParameters ?: SSLParameters()
+            params.serverNames = listOf(SNIHostName(sniHost))
             sslSocket.sslParameters = params
             sslSocket.startHandshake()
             activeSocket = sslSocket

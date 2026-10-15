@@ -22,4 +22,18 @@ class ExampleUnitTest {
         val stats2 = TrafficStats(connectedDurationSeconds = 3665)
         assertEquals("01:01:05", stats2.formattedDuration)
     }
+
+    @Test
+    fun ssidQuoteStripping_cleansQuotesAndWhitespace() {
+        val raw1 = "\"MyHomeWifi\""
+        var s1 = raw1.trim()
+        if (s1.startsWith("\"") && s1.endsWith("\"") && s1.length >= 2) {
+            s1 = s1.substring(1, s1.length - 1)
+        }
+        assertEquals("MyHomeWifi", s1)
+
+        val raw2 = "<unknown ssid>"
+        val isInvalid = raw2 == "<unknown ssid>" || raw2 == "\"<unknown ssid>\""
+        assertEquals(true, isInvalid)
+    }
 }

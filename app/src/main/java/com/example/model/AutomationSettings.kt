@@ -8,9 +8,16 @@ enum class WifiLeavePolicy(val displayName: String) {
 
 data class AutomationSettings(
     val isAutomationGloballyEnabled: Boolean = true,
+
+    // Service Automation
+    val startOnLaunch: Boolean = false,
+    val backgroundRunEnabled: Boolean = true,
+
     // Wi-Fi rules
+    val wifiSsidPermissionEnabled: Boolean = true,
     val autoStartOnWifi: Boolean = true,
-    val matchAnyWifiNetwork: Boolean = true, // When true, any active Wi-Fi connects without requiring location permission
+    val matchAnyWifiNetwork: Boolean = true, // When true ("Any SSID"), any active Wi-Fi connects without requiring location/SSID match
+    val specificSsid: String = "", // User-defined target SSID when "Any SSID" is turned OFF
     val targetWifiSsids: Set<String> = emptySet(),
     val wifiProfileId: Long? = null,
     val autoStopOnWifiLeave: Boolean = true,
@@ -20,7 +27,7 @@ data class AutomationSettings(
 
     // Mobile Data rules
     val autoStartOnMobileData: Boolean = false,
-    val autoStopOnMobileDataDisabled: Boolean = false,
+    val autoStopOnMobileDataDisabled: Boolean = true, // When Mobile Data is switched OFF or lost, auto-stop VPN immediately
     val mobileProfileId: Long? = null,
 
     // Manual override suppression

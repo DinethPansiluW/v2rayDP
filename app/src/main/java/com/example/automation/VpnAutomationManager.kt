@@ -106,7 +106,6 @@ class VpnAutomationManager(private val context: Context) {
 
             override fun onLost(network: Network) {
                 scope.launch {
-                    delay(300)
                     evaluateNetworkState()
                 }
             }
@@ -179,6 +178,11 @@ class VpnAutomationManager(private val context: Context) {
             return
         }
 
+        if (!settings.backgroundRunEnabled && !force) {
+            _lastAutomationStatus.value = "Background Run is disabled (Automation paused)"
+            return
+        }
+
         if (settings.manualOverrideSuppressed && !force) {
             _lastAutomationStatus.value = "Suppressed by Manual Override (${settings.manualOverrideReason})"
             return
@@ -197,11 +201,16 @@ class VpnAutomationManager(private val context: Context) {
 
         for (net in allNetworks) {
             val caps = connectivityManager?.getNetworkCapabilities(net) ?: continue
+            // Exclude the VPN network itself from physical interface checks
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                continue
+            }
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
                 hasWifi = true
                 wifiCaps = caps
             }
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
                 hasCellular = true
             }
         }
@@ -216,88 +225,124 @@ class VpnAutomationManager(private val context: Context) {
 
         val isVpnRunning = V2RayVpnService.serviceState.value.isRunning
 
-        // Automation Rule Evaluation:
+        // 1. Critical Disconnect Check (Data OFF -> VPN OFF):
+        // When Mobile Data is turned OFF or all internet connections are lost, VPN immediately stops!
+        if (!hasWifi && !hasCellular) {
+            _lastAutomationStatus.value = "No network connections (Data & Wi-Fi OFF)"
+            if (isVpnRunning) {
+                lastActionTime = now
+                lastKnownSsid = null
+                _lastAutomationStatus.value = "Data/Wi-Fi OFF -> Stopped VPN"
+                logAutoEvent("AUTO", "All physical networks lost (Mobile Data & Wi-Fi OFF). Stopping VPN service.", "Network Disconnected / Data OFF")
+                V2RayVpnService.stop(context, "Network disconnected / Data OFF")
+                return
+            }
+        }
+
+        // 2. Wi-Fi SSID Automation & "Any SSID" Toggle Logic:
         if (hasWifi) {
-            // Case A: Connected to Wi-Fi
-            val isTargetSsid = settings.matchAnyWifiNetwork ||
-                    settings.targetWifiSsids.isEmpty() ||
-                    (ssid != null && settings.targetWifiSsids.any { it.equals(ssid, ignoreCase = true) }) ||
-                    (ssid == null && settings.matchAnyWifiNetwork)
+            val currentCleanSsid = cleanSsidString(ssid)
+            val specificClean = cleanSsidString(settings.specificSsid)
+            val configuredClean = settings.targetWifiSsids.mapNotNull { cleanSsidString(it) }
+
+            // If "Any SSID" is checked, connect on any Wi-Fi.
+            // If unchecked, connect ONLY if the connected SSID matches user-defined input string.
+            val isTargetSsid = if (settings.matchAnyWifiNetwork) {
+                true
+            } else {
+                if (currentCleanSsid == null) {
+                    false
+                } else {
+                    (specificClean != null && currentCleanSsid.equals(specificClean, ignoreCase = true)) ||
+                    configuredClean.any { it.equals(currentCleanSsid, ignoreCase = true) }
+                }
+            }
 
             if (isTargetSsid) {
                 if (settings.autoStartOnWifi && !isVpnRunning) {
                     if (android.net.VpnService.prepare(context) == null) {
                         lastActionTime = now
-                        lastKnownSsid = ssid
-                        _lastAutomationStatus.value = "Connected to Wi-Fi (${ssid ?: "Wi-Fi"}) -> Auto-started VPN"
-                        logAutoEvent("AUTO", "Approved Wi-Fi (${ssid ?: "Wi-Fi"}) active. Auto-starting VPN…", "Approved Wi-Fi Connected")
+                        lastKnownSsid = currentCleanSsid ?: ssid
+                        _lastAutomationStatus.value = "Connected to Wi-Fi (${currentCleanSsid ?: "Any Wi-Fi"}) -> Auto-started VPN"
+                        logAutoEvent("AUTO", "Approved Wi-Fi active (${currentCleanSsid ?: "Any Wi-Fi"}). Auto-starting VPN…", "Approved Wi-Fi Connected")
                         V2RayVpnService.start(context, settings.wifiProfileId)
                     } else {
-                        _lastAutomationStatus.value = "Wi-Fi connected (${ssid ?: "Wi-Fi"}), but VPN permission needs 1-time grant in app"
-                        logAutoEvent("WARN", "VPN permission not prepared yet. Please tap Start in app once to grant system permission.")
+                        _lastAutomationStatus.value = "Wi-Fi connected (${currentCleanSsid ?: "Wi-Fi"}), tap Start in app once to grant VPN permission"
                     }
                 } else if (isVpnRunning) {
-                    lastKnownSsid = ssid
-                    _lastAutomationStatus.value = "VPN active on Wi-Fi (${ssid ?: "Wi-Fi"})"
+                    lastKnownSsid = currentCleanSsid ?: ssid
+                    _lastAutomationStatus.value = "VPN active on Wi-Fi (${currentCleanSsid ?: "Wi-Fi"})"
                 }
             } else {
-                // Connected to an UNCONFIGURED Wi-Fi network: only stop if NOT matchAnyWifiNetwork AND targetWifiSsids is specified and matched
-                if (isVpnRunning && settings.autoStopOnWifiLeave && !settings.matchAnyWifiNetwork && settings.targetWifiSsids.isNotEmpty() && ssid != null) {
+                // Connected to an unapproved Wi-Fi SSID when "Any SSID" is OFF:
+                if (isVpnRunning && !settings.matchAnyWifiNetwork) {
                     lastActionTime = now
-                    _lastAutomationStatus.value = "Left approved Wi-Fi ($ssid) -> Stopped VPN"
-                    logAutoEvent("AUTO", "Connected to unapproved Wi-Fi ($ssid). Auto-stopping VPN.", "Non-target Wi-Fi connected")
-                    V2RayVpnService.stop(context, "Left approved Wi-Fi")
+                    _lastAutomationStatus.value = "Unapproved Wi-Fi SSID (${currentCleanSsid ?: "Unknown"}) -> Stopped VPN"
+                    logAutoEvent("AUTO", "Wi-Fi SSID (${currentCleanSsid ?: "Unknown"}) does not match approved target. Stopping VPN.", "SSID Mismatch")
+                    V2RayVpnService.stop(context, "Unapproved Wi-Fi SSID")
+                } else {
+                    _lastAutomationStatus.value = "Wi-Fi (${currentCleanSsid ?: "Unknown"}) does not match target SSID"
                 }
             }
-        } else if (!hasWifi && lastKnownSsid != null) {
-            // Case B: Disconnected from Wi-Fi
-            val leftSsid = lastKnownSsid
+        } else if (!hasWifi && (lastKnownSsid != null || isVpnRunning)) {
+            // Disconnected from Wi-Fi
+            val leftSsid = lastKnownSsid ?: "Wi-Fi"
             lastKnownSsid = null
 
-            if (isVpnRunning && settings.autoStopOnWifiLeave) {
-                lastActionTime = now
-                when (settings.wifiLeavePolicy) {
-                    WifiLeavePolicy.STOP_VPN -> {
-                        _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Stopped VPN (Policy: Stop)"
-                        logAutoEvent("AUTO", "Disconnected from Wi-Fi ($leftSsid). Stopping VPN per policy.", "Left target Wi-Fi")
-                        V2RayVpnService.stop(context, "Left target Wi-Fi")
-                    }
-                    WifiLeavePolicy.SWITCH_TO_MOBILE -> {
-                        if (hasCellular && settings.autoStartOnMobileData) {
-                            _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Switched to Mobile Data"
-                            logAutoEvent("AUTO", "Switched from Wi-Fi to Mobile Data. Re-starting with mobile profile.", "Mobile Data Switch")
-                            V2RayVpnService.start(context, settings.mobileProfileId)
-                        } else {
+            if (isVpnRunning) {
+                if (!hasCellular) {
+                    // Mobile Data is OFF and Wi-Fi is lost -> immediately stop VPN!
+                    lastActionTime = now
+                    _lastAutomationStatus.value = "Left Wi-Fi (Mobile Data OFF) -> Stopped VPN"
+                    logAutoEvent("AUTO", "Disconnected from Wi-Fi and Mobile Data is OFF. Immediately stopping VPN.", "Network Lost")
+                    V2RayVpnService.stop(context, "Network lost (No Mobile Data)")
+                } else if (settings.autoStopOnWifiLeave) {
+                    when (settings.wifiLeavePolicy) {
+                        WifiLeavePolicy.STOP_VPN -> {
+                            lastActionTime = now
                             _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Stopped VPN"
+                            logAutoEvent("AUTO", "Disconnected from Wi-Fi ($leftSsid). Stopping VPN per policy.", "Left target Wi-Fi")
                             V2RayVpnService.stop(context, "Left target Wi-Fi")
                         }
-                    }
-                    WifiLeavePolicy.KEEP_VPN -> {
-                        _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Kept VPN running"
-                        logAutoEvent("AUTO", "Left Wi-Fi ($leftSsid). Keeping VPN active as per policy.", "Policy: Keep VPN")
+                        WifiLeavePolicy.SWITCH_TO_MOBILE -> {
+                            if (settings.autoStartOnMobileData) {
+                                lastActionTime = now
+                                _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Switched to Mobile Data"
+                                logAutoEvent("AUTO", "Switched from Wi-Fi to Mobile Data. Starting with mobile profile.", "Mobile Data Switch")
+                                V2RayVpnService.start(context, settings.mobileProfileId)
+                            } else {
+                                lastActionTime = now
+                                _lastAutomationStatus.value = "Left Wi-Fi ($leftSsid) -> Stopped VPN"
+                                V2RayVpnService.stop(context, "Left target Wi-Fi")
+                            }
+                        }
+                        WifiLeavePolicy.KEEP_VPN -> {
+                            _lastAutomationStatus.value = "Left Wi-Fi -> VPN kept running on Mobile Data"
+                        }
                     }
                 }
             }
         } else if (hasCellular && !hasWifi) {
-            // Case C: Mobile data only
+            // Mobile data only
             if (settings.autoStartOnMobileData && !isVpnRunning) {
                 lastActionTime = now
                 _lastAutomationStatus.value = "Mobile Data active -> Started VPN"
-                logAutoEvent("AUTO", "Mobile data connected and usable. Auto-starting VPN…", "Mobile Data Connected")
+                logAutoEvent("AUTO", "Mobile data connected. Auto-starting VPN…", "Mobile Data Connected")
                 V2RayVpnService.start(context, settings.mobileProfileId)
             } else if (isVpnRunning) {
                 _lastAutomationStatus.value = "VPN active on Mobile Data"
-            }
-        } else if (!hasWifi && !hasCellular && isVpnRunning) {
-            if (settings.autoStopOnMobileDataDisabled) {
-                lastActionTime = now
-                _lastAutomationStatus.value = "No network interfaces -> Stopped VPN"
-                V2RayVpnService.stop(context, "No network available")
             }
         }
     }
 
     private fun detectCurrentWifiSsid(caps: NetworkCapabilities?): String? {
+        val app = V2RayApplication.get()
+        val settings = app.preferencesRepository.getAutomationSettings()
+
+        if (!settings.wifiSsidPermissionEnabled) {
+            return if (_isWifiConnected.value) "Active Wi-Fi" else null
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
             val transportInfo = caps.transportInfo
             if (transportInfo is WifiInfo) {
@@ -325,15 +370,15 @@ class VpnAutomationManager(private val context: Context) {
         return if (_isWifiConnected.value) "Wi-Fi Network" else null
     }
 
-    private fun cleanSsidString(raw: String?): String? {
-        if (raw.isNullOrEmpty() || raw == "<unknown ssid>" || raw == "\"<unknown ssid>\"") {
+    fun cleanSsidString(raw: String?): String? {
+        if (raw.isNullOrBlank() || raw == "<unknown ssid>" || raw == "\"<unknown ssid>\"") {
             return null
         }
         var s = raw.trim()
         if (s.startsWith("\"") && s.endsWith("\"") && s.length >= 2) {
             s = s.substring(1, s.length - 1)
         }
-        return s.ifEmpty { null }
+        return s.trim().ifEmpty { null }
     }
 
     private fun logAutoEvent(level: String, message: String, triggerReason: String = "") {

@@ -58,6 +58,7 @@ import com.example.ui.theme.DarkBg
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceBorder
 import com.example.ui.theme.DarkSurfaceVariant
+import com.example.ui.theme.appSwitchColors
 import com.example.ui.theme.StatusConnected
 import com.example.ui.theme.StatusConnecting
 import com.example.ui.theme.StatusError
@@ -138,7 +139,7 @@ fun HotspotScreen(
                         onCheckedChange = {
                             viewModel.updateAutomationSettings(settings.copy(isHotspotSharingEnabled = it))
                         },
-                        colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                        colors = appSwitchColors()
                     )
                 }
             }

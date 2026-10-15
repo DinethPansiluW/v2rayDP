@@ -71,6 +71,7 @@ import com.example.ui.theme.StatusConnecting
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.appSwitchColors
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -146,7 +147,7 @@ fun AutomationScreen(
                         onCheckedChange = {
                             viewModel.updateAutomationSettings(settings.copy(isAutomationGloballyEnabled = it))
                         },
-                        colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                        colors = appSwitchColors()
                     )
                 }
             }
@@ -366,91 +367,150 @@ fun AutomationScreen(
                         Switch(
                             checked = settings.autoStartOnWifi,
                             onCheckedChange = { viewModel.updateAutomationSettings(settings.copy(autoStartOnWifi = it)) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Target SSIDs Management
-                    Text("Configured Target SSIDs:", fontSize = 12.sp, color = TextSecondary, fontWeight = FontWeight.Medium)
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    if (settings.targetWifiSsids.isEmpty()) {
-                        Text(
-                            text = "All Wi-Fi networks allowed (empty list)",
-                            fontSize = 12.sp,
-                            color = AccentCyan
-                        )
-                    } else {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            settings.targetWifiSsids.forEach { ssid ->
-                                Box(
-                                    modifier = Modifier
-                                        .background(DarkSurfaceVariant, RoundedCornerShape(8.dp))
-                                        .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(ssid, color = TextPrimary, fontSize = 12.sp)
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = "Remove",
-                                            tint = TextSecondary,
-                                            modifier = Modifier
-                                                .size(14.dp)
-                                                .clickable { viewModel.removeTargetSsid(ssid) }
-                                        )
-                                    }
-                                }
-                            }
+                    // B. Any SSID Toggle Button (Requirement 2)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Any SSID", fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                            Text(
+                                text = if (settings.matchAnyWifiNetwork) "Connect on any Wi-Fi network" else "Connect ONLY to specific approved SSID",
+                                fontSize = 12.sp,
+                                color = if (settings.matchAnyWifiNetwork) AccentCyan else TextSecondary
+                            )
                         }
+                        Switch(
+                            checked = settings.matchAnyWifiNetwork,
+                            onCheckedChange = { checked ->
+                                viewModel.updateAutomationSettings(settings.copy(matchAnyWifiNetwork = checked))
+                                viewModel.automationManager.forceEvaluateNow()
+                            },
+                            colors = appSwitchColors(),
+                            modifier = Modifier.testTag("any_ssid_toggle_switch")
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // Input to add SSID or add current active SSID
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = newSsidInput,
-                            onValueChange = { newSsidInput = it },
-                            placeholder = { Text("Enter Wi-Fi SSID", fontSize = 12.sp) },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AccentCyan,
-                                unfocusedBorderColor = DarkSurfaceBorder,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
+                    // If "Any SSID" is turned ON, hide the specific SSID input layout.
+                    // If turned OFF, show the specific SSID input field and configured target SSIDs.
+                    if (settings.matchAnyWifiNetwork) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DarkSurfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "Any SSID Enabled: Specific SSID check is bypassed. VPN automatically connects on any Wi-Fi network.",
+                                fontSize = 12.sp,
+                                color = AccentCyan
                             )
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                viewModel.addTargetSsid(newSsidInput)
-                                newSsidInput = ""
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = androidx.compose.ui.graphics.Color.Black)
-                        ) {
-                            Text("Add")
                         }
-                    }
+                    } else {
+                        // Specific SSID input layout (Visible ONLY when Any SSID is OFF)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text("Specific Target SSID:", fontSize = 12.sp, color = TextSecondary, fontWeight = FontWeight.Medium)
+                            Spacer(modifier = Modifier.height(6.dp))
 
-                    if (isWifiConnected && currentSsid != null && !settings.targetWifiSsids.contains(currentSsid)) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        TextButton(
-                            onClick = { viewModel.addTargetSsid(currentSsid!!) }
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Add current Wi-Fi ('$currentSsid')", color = AccentCyan, fontSize = 12.sp)
+                            // Input to set / update specific target SSID
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = newSsidInput,
+                                    onValueChange = { newSsidInput = it },
+                                    placeholder = { Text("Enter target Wi-Fi SSID", fontSize = 12.sp) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("specific_ssid_input"),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = AccentCyan,
+                                        unfocusedBorderColor = DarkSurfaceBorder,
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary
+                                    )
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        val clean = viewModel.automationManager.cleanSsidString(newSsidInput) ?: newSsidInput.trim()
+                                        if (clean.isNotEmpty()) {
+                                            viewModel.addTargetSsid(clean)
+                                            viewModel.updateAutomationSettings(settings.copy(specificSsid = clean, matchAnyWifiNetwork = false))
+                                            newSsidInput = ""
+                                            viewModel.automationManager.forceEvaluateNow()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = androidx.compose.ui.graphics.Color.Black),
+                                    modifier = Modifier.testTag("save_specific_ssid_button")
+                                ) {
+                                    Text("Add")
+                                }
+                            }
+
+                            if (isWifiConnected && currentSsid != null && !settings.targetWifiSsids.contains(currentSsid)) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                val cleanCurrent = viewModel.automationManager.cleanSsidString(currentSsid) ?: currentSsid!!
+                                TextButton(
+                                    onClick = {
+                                        viewModel.addTargetSsid(cleanCurrent)
+                                        viewModel.updateAutomationSettings(settings.copy(specificSsid = cleanCurrent, matchAnyWifiNetwork = false))
+                                        viewModel.automationManager.forceEvaluateNow()
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Use current Wi-Fi ('$cleanCurrent')", color = AccentCyan, fontSize = 12.sp)
+                                }
+                            }
+
+                            if (settings.targetWifiSsids.isNotEmpty() || settings.specificSsid.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val allTargets = (settings.targetWifiSsids + listOfNotNull(settings.specificSsid.ifEmpty { null })).distinct()
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    allTargets.forEach { ssid ->
+                                        Box(
+                                            modifier = Modifier
+                                                .background(DarkSurfaceVariant, RoundedCornerShape(8.dp))
+                                                .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(8.dp))
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(ssid, color = TextPrimary, fontSize = 12.sp)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = "Remove",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier
+                                                        .size(14.dp)
+                                                        .clickable {
+                                                            viewModel.removeTargetSsid(ssid)
+                                                            if (settings.specificSsid == ssid) {
+                                                                viewModel.updateAutomationSettings(settings.copy(specificSsid = ""))
+                                                            }
+                                                        }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -545,7 +605,7 @@ fun AutomationScreen(
                         Switch(
                             checked = settings.autoStopOnWifiOff,
                             onCheckedChange = { viewModel.updateAutomationSettings(settings.copy(autoStopOnWifiOff = it)) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
 
@@ -564,7 +624,7 @@ fun AutomationScreen(
                         Switch(
                             checked = settings.autoReconnectOnWifiReturn,
                             onCheckedChange = { viewModel.updateAutomationSettings(settings.copy(autoReconnectOnWifiReturn = it)) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
                 }
@@ -601,7 +661,7 @@ fun AutomationScreen(
                         Switch(
                             checked = settings.autoStartOnMobileData,
                             onCheckedChange = { viewModel.updateAutomationSettings(settings.copy(autoStartOnMobileData = it)) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
 
@@ -619,7 +679,7 @@ fun AutomationScreen(
                         Switch(
                             checked = settings.autoStopOnMobileDataDisabled,
                             onCheckedChange = { viewModel.updateAutomationSettings(settings.copy(autoStopOnMobileDataDisabled = it)) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
 

@@ -60,3 +60,13 @@ fun MyApplicationTheme(
         content = content
     )
 }
+
+@Composable
+fun appSwitchColors() = androidx.compose.material3.SwitchDefaults.colors(
+    checkedThumbColor = Color.White,
+    checkedTrackColor = AccentCyan,
+    checkedBorderColor = AccentCyan,
+    uncheckedThumbColor = Color(0xFFCBD5E1),
+    uncheckedTrackColor = Color(0xFF1E293B),
+    uncheckedBorderColor = Color(0xFF475569)
+)

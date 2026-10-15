@@ -58,6 +58,7 @@ import com.example.ui.theme.DarkBg
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceBorder
 import com.example.ui.theme.DarkSurfaceVariant
+import com.example.ui.theme.appSwitchColors
 import com.example.ui.theme.StatusConnected
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.TextPrimary
@@ -238,7 +239,7 @@ fun SettingsScreen(
                                 bypassLan = it
                                 prefs.isBypassLan = it
                             },
-                            colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                            colors = appSwitchColors()
                         )
                     }
 

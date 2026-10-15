@@ -25,11 +25,13 @@ object VmessLinkParser {
     }
 
     private fun parseVlessLink(link: String): ServerProfile {
-        // Format: vless://uuid@address:port?param=val#remarks
+        // Standard VLESS URI format:
+        // vless://[uuid]@[host]:[port]?type=[network]&security=[security]&sni=[sni]&fp=[fp]&pbk=[pbk]&sid=[sid]&flow=[flow]&serviceName=[grpcService]#remarks
         val withoutScheme = link.substring(8).trim()
         val fragmentIndex = withoutScheme.indexOf('#')
         val remarks = if (fragmentIndex != -1) {
-            URLDecoder.decode(withoutScheme.substring(fragmentIndex + 1), "UTF-8").trim()
+            runCatching { URLDecoder.decode(withoutScheme.substring(fragmentIndex + 1), "UTF-8").trim() }
+                .getOrDefault("VLESS Node")
         } else {
             "VLESS Node"
         }
@@ -39,37 +41,83 @@ object VmessLinkParser {
         val authorityPart = if (queryIndex != -1) mainPart.substring(0, queryIndex) else mainPart
         val queryPart = if (queryIndex != -1) mainPart.substring(queryIndex + 1) else ""
 
-        val atIndex = authorityPart.indexOf('@')
-        if (atIndex == -1) throw IllegalArgumentException("Invalid VLESS link: missing '@' delimiter")
+        val atIndex = authorityPart.lastIndexOf('@')
+        if (atIndex == -1) throw IllegalArgumentException("Invalid VLESS URI: Missing '@' user delimiter")
 
         val uuid = authorityPart.substring(0, atIndex).trim()
-        val hostPort = authorityPart.substring(atIndex + 1).trim()
-        val colonIndex = hostPort.lastIndexOf(':')
-        if (colonIndex == -1) throw IllegalArgumentException("Invalid VLESS link: missing host:port")
+        val rawHostPort = authorityPart.substring(atIndex + 1).trim()
+        val hostPort = rawHostPort.removeSuffix("/").trim()
 
-        val address = hostPort.substring(0, colonIndex).trim()
-        val port = hostPort.substring(colonIndex + 1).toIntOrNull() ?: 443
+        // Robust parsing of address and port supporting IPv6 ([::1]:port), IPv4, and domain names
+        val (address, port) = when {
+            hostPort.startsWith("[") -> {
+                val closeBracket = hostPort.indexOf(']')
+                if (closeBracket == -1) throw IllegalArgumentException("Invalid IPv6 address in VLESS URI: Missing closing bracket ']'")
+                val addr = hostPort.substring(1, closeBracket).trim()
+                val portStr = hostPort.substring(closeBracket + 1).removePrefix(":").removeSuffix("/").trim()
+                val p = portStr.toIntOrNull() ?: 443
+                addr to p
+            }
+            hostPort.contains(":") -> {
+                val colonIndex = hostPort.lastIndexOf(':')
+                val addr = hostPort.substring(0, colonIndex).trim().removeSuffix("/")
+                val portStr = hostPort.substring(colonIndex + 1).removePrefix(":").removeSuffix("/").trim()
+                val p = portStr.toIntOrNull() ?: 443
+                addr to p
+            }
+            else -> {
+                hostPort.removeSuffix("/") to 443
+            }
+        }
 
-        // Parse query params
+        // Parse query parameters case-insensitively with URL decoding
         val queryMap = mutableMapOf<String, String>()
         if (queryPart.isNotEmpty()) {
             queryPart.split("&").forEach { param ->
                 val eq = param.indexOf('=')
                 if (eq != -1) {
                     val key = param.substring(0, eq).trim().lowercase()
-                    val value = URLDecoder.decode(param.substring(eq + 1).trim(), "UTF-8")
+                    val rawVal = param.substring(eq + 1).trim()
+                    val value = runCatching { URLDecoder.decode(rawVal, "UTF-8") }.getOrDefault(rawVal)
                     queryMap[key] = value
                 }
             }
         }
 
-        val network = queryMap["type"] ?: queryMap["net"] ?: "ws"
-        val security = queryMap["security"] ?: "tls"
-        val path = queryMap["path"] ?: "/"
+        // Transport Network: tcp, ws, grpc, h2, http
+        val networkRaw = queryMap["type"] ?: queryMap["net"] ?: "tcp"
+        val network = networkRaw.lowercase().trim()
+
+        // Security: reality, tls, none
+        val securityRaw = queryMap["security"]?.lowercase()?.trim() ?: "none"
+        val pbk = queryMap["pbk"] ?: queryMap["publickey"] ?: queryMap["public_key"] ?: ""
+        val sid = queryMap["sid"] ?: queryMap["shortid"] ?: queryMap["short_id"] ?: ""
+        val fp = queryMap["fp"] ?: queryMap["fingerprint"] ?: if (securityRaw == "reality" || pbk.isNotEmpty()) "chrome" else ""
+        val spx = queryMap["spx"] ?: queryMap["spiderx"] ?: queryMap["spider_x"] ?: ""
+
         val host = queryMap["host"] ?: ""
-        val sni = queryMap["sni"] ?: queryMap["peer"] ?: host.ifEmpty { address }
+        val path = queryMap["path"] ?: "/"
+        val sni = queryMap["sni"] ?: queryMap["peer"] ?: queryMap["servername"] ?: queryMap["server_name"] ?: host.ifEmpty { address }
         val alpn = queryMap["alpn"] ?: ""
-        val headerType = queryMap["headertype"] ?: "none"
+        val headerType = queryMap["headertype"] ?: queryMap["header_type"] ?: "none"
+
+        // Flow: xtls-rprx-vision. Crucial: Xray rejects vision on gRPC/WebSocket transports!
+        val rawFlow = queryMap["flow"] ?: ""
+        val flow = if (network == "tcp" || network == "raw") rawFlow else ""
+
+        // gRPC serviceName and mode
+        val serviceName = queryMap["servicename"]
+            ?: queryMap["service_name"]
+            ?: queryMap["servicename"]
+            ?: if (network == "grpc") path.removePrefix("/") else ""
+        val grpcMode = queryMap["mode"] ?: "gun"
+
+        // Determine effective TLS mode
+        val tlsMode = when {
+            securityRaw == "reality" || pbk.isNotEmpty() -> "reality"
+            securityRaw == "tls" -> "tls"
+            else -> "none"
+        }
 
         return ServerProfile(
             name = remarks.ifEmpty { "VLESS Node" },
@@ -79,13 +127,20 @@ object VmessLinkParser {
             uuid = uuid,
             alterId = 0,
             security = "none",
-            network = network.lowercase(),
+            network = network,
             headerType = headerType,
             host = host,
             path = path,
-            tls = if (security.isNotEmpty() && security != "none") "tls" else "none",
+            tls = tlsMode,
             sni = sni,
-            alpn = alpn
+            alpn = alpn,
+            flow = flow,
+            publicKey = pbk,
+            shortId = sid,
+            fingerprint = fp,
+            spiderX = spx,
+            serviceName = serviceName,
+            grpcMode = grpcMode
         )
     }
 
@@ -186,12 +241,23 @@ object VmessLinkParser {
     fun toVlessLink(profile: ServerProfile): String {
         val encodedPath = URLEncoder.encode(profile.path, "UTF-8")
         val encodedName = URLEncoder.encode(profile.name, "UTF-8")
-        val sec = if (profile.isTlsEnabled) "tls" else "none"
+        val sec = when {
+            profile.isReality -> "reality"
+            profile.isTlsEnabled -> "tls"
+            else -> "none"
+        }
         val sniPart = if (profile.sni.isNotEmpty()) "&sni=${profile.sni}" else ""
         val hostPart = if (profile.host.isNotEmpty()) "&host=${profile.host}" else ""
         val alpnPart = if (profile.alpn.isNotEmpty()) "&alpn=${profile.alpn}" else ""
+        val flowPart = if (profile.flow.isNotEmpty()) "&flow=${profile.flow}" else ""
+        val realityPart = if (profile.isReality) {
+            "&pbk=${profile.publicKey}&sid=${profile.shortId}&fp=${profile.fingerprint.ifEmpty { "chrome" }}&spx=${URLEncoder.encode(profile.spiderX.ifEmpty { "/" }, "UTF-8")}"
+        } else ""
+        val grpcPart = if (profile.isGrpc) {
+            "&serviceName=${URLEncoder.encode(profile.serviceName, "UTF-8")}&mode=${profile.grpcMode}"
+        } else ""
 
-        return "vless://${profile.uuid}@${profile.address}:${profile.port}?type=${profile.network}&security=$sec&path=$encodedPath$hostPart$sniPart$alpnPart#$encodedName"
+        return "vless://${profile.uuid}@${profile.address}:${profile.port}?type=${profile.network}&security=$sec&path=$encodedPath$hostPart$sniPart$alpnPart$flowPart$realityPart$grpcPart#$encodedName"
     }
 
     fun toVmessLink(profile: ServerProfile): String {
@@ -270,6 +336,11 @@ object VmessLinkParser {
                     put("id", profile.uuid)
                     if (profile.isVless) {
                         put("encryption", "none")
+                        // XTLS-Vision flow is ONLY supported on TCP / RAW transport with TLS or Reality!
+                        // Including flow on gRPC or WebSocket will cause Xray-Core to crash or reject the config.
+                        if (profile.flow.isNotEmpty() && (profile.network == "tcp" || profile.network == "raw")) {
+                            put("flow", profile.flow)
+                        }
                     } else {
                         put("alterId", profile.alterId)
                         put("security", profile.security)
@@ -283,12 +354,30 @@ object VmessLinkParser {
             // StreamSettings
             val streamSettings = JSONObject().apply {
                 put("network", profile.network)
-                put("security", if (profile.isTlsEnabled) "tls" else "none")
+                val isReality = profile.isReality
+                put("security", when {
+                    isReality -> "reality"
+                    profile.isTlsEnabled -> "tls"
+                    else -> "none"
+                })
 
-                if (profile.isTlsEnabled) {
+                if (isReality) {
+                    val realitySettings = JSONObject().apply {
+                        put("serverName", profile.sni.ifEmpty { profile.address })
+                        put("fingerprint", profile.fingerprint.ifEmpty { "chrome" })
+                        put("show", false)
+                        put("publicKey", profile.publicKey)
+                        put("shortId", profile.shortId)
+                        put("spiderX", profile.spiderX.ifEmpty { "/" })
+                    }
+                    put("realitySettings", realitySettings)
+                } else if (profile.isTlsEnabled) {
                     val tlsSettings = JSONObject().apply {
                         put("serverName", profile.sni.ifEmpty { profile.address })
                         put("allowInsecure", true)
+                        if (profile.fingerprint.isNotEmpty()) {
+                            put("fingerprint", profile.fingerprint)
+                        }
                         if (profile.alpn.isNotEmpty()) {
                             val alpnList = JSONArray()
                             profile.alpn.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach {
@@ -308,6 +397,30 @@ object VmessLinkParser {
                         }
                     }
                     put("wsSettings", wsSettings)
+                } else if (profile.network == "grpc") {
+                    val grpcSettings = JSONObject().apply {
+                        val sName = profile.serviceName.ifEmpty { profile.path.removePrefix("/") }
+                        put("serviceName", sName)
+                        put("multiMode", profile.grpcMode.equals("multi", ignoreCase = true))
+                    }
+                    put("grpcSettings", grpcSettings)
+                } else if (profile.network == "tcp" && profile.headerType.equals("http", ignoreCase = true)) {
+                    val tcpSettings = JSONObject().apply {
+                        val header = JSONObject().apply {
+                            put("type", "http")
+                            val request = JSONObject().apply {
+                                put("version", "1.1")
+                                put("method", "GET")
+                                put("path", JSONArray().put(profile.path.ifEmpty { "/" }))
+                                if (profile.host.isNotEmpty()) {
+                                    put("headers", JSONObject().put("Host", JSONArray().put(profile.host)))
+                                }
+                            }
+                            put("request", request)
+                        }
+                        put("header", header)
+                    }
+                    put("tcpSettings", tcpSettings)
                 }
             }
             put("streamSettings", streamSettings)
@@ -323,12 +436,66 @@ object VmessLinkParser {
 
         root.put("outbounds", outboundsArray)
 
-        // 4. DNS
+        // 4. Routing: bypass Android Captive Portal check & local networks directly
+        val routingObj = JSONObject().apply {
+            put("domainStrategy", "IPIfNonMatch")
+            put("domainMatcher", "hybrid")
+            val rulesArray = JSONArray()
+
+            // 4a. Captive portal validation bypass rule -> direct outbound
+            rulesArray.put(JSONObject().apply {
+                put("type", "field")
+                put("outboundTag", "direct")
+                put("domain", JSONArray().apply {
+                    put("domain:connectivitycheck.gstatic.com")
+                    put("domain:clients3.google.com")
+                    put("domain:captive.apple.com")
+                    put("domain:connectivitycheck.android.com")
+                    put("domain:msftconnecttest.com")
+                    put("domain:detectportal.firefox.com")
+                    put("domain:gstatic.com")
+                    put("domain:g.cn")
+                    put("domain:google.cn")
+                })
+            })
+
+            // 4b. Private LAN / RFC1918 IPs -> direct outbound
+            rulesArray.put(JSONObject().apply {
+                put("type", "field")
+                put("outboundTag", "direct")
+                put("ip", JSONArray().put("geoip:private"))
+            })
+
+            // 4c. All other Internet traffic -> proxy outbound
+            rulesArray.put(JSONObject().apply {
+                put("type", "field")
+                put("outboundTag", "proxy")
+                put("network", "tcp,udp")
+            })
+
+            put("rules", rulesArray)
+        }
+        root.put("routing", routingObj)
+
+        // 5. DNS
         root.put("dns", JSONObject().apply {
             put("servers", JSONArray().put("1.1.1.1").put("8.8.8.8").put("localhost"))
         })
 
         return root.toString(2)
+    }
+
+    /**
+     * Directly parses a modern VLESS URI and converts it into a valid Xray-Core JSON configuration string.
+     * Handles VLESS-Reality, gRPC, and XTLS-Vision parameters safely.
+     */
+    fun vlessUriToXrayJson(
+        uriString: String,
+        socksPort: Int = 10808,
+        httpPort: Int = 10809
+    ): String {
+        val profile = parseVlessLink(uriString.trim())
+        return toV2RayConfigJson(profile, socksPort, httpPort)
     }
 
     private fun decodeFlexibleBase64(input: String): String {

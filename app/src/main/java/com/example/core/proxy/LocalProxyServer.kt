@@ -61,6 +61,15 @@ class LocalProxyServer(
         }
     }
 
+    private fun readFully(inStream: InputStream, target: ByteArray) {
+        var total = 0
+        while (total < target.size) {
+            val r = inStream.read(target, total, target.size - total)
+            if (r < 0) throw java.io.EOFException("Unexpected EOF reading ${target.size} bytes (got $total)")
+            total += r
+        }
+    }
+
     private fun handleSocksClient(client: Socket) {
         try {
             client.tcpNoDelay = true
@@ -74,8 +83,9 @@ class LocalProxyServer(
                 return
             }
             val nMethods = inStream.read()
+            if (nMethods < 0) return
             val methods = ByteArray(nMethods)
-            inStream.read(methods)
+            readFully(inStream, methods)
 
             // Respond: 0x05, 0x00 (NO AUTH)
             outStream.write(byteArrayOf(0x05, 0x00))
@@ -97,27 +107,33 @@ class LocalProxyServer(
             when (atyp) {
                 0x01 -> { // IPv4
                     val ip = ByteArray(4)
-                    inStream.read(ip)
+                    readFully(inStream, ip)
                     destHost = InetAddress.getByAddress(ip).hostAddress ?: "127.0.0.1"
                 }
                 0x03 -> { // Domain name
                     val len = inStream.read()
+                    if (len <= 0) return
                     val domainBytes = ByteArray(len)
-                    inStream.read(domainBytes)
+                    readFully(inStream, domainBytes)
                     destHost = String(domainBytes, StandardCharsets.UTF_8)
                 }
                 0x04 -> { // IPv6
                     val ip6 = ByteArray(16)
-                    inStream.read(ip6)
+                    readFully(inStream, ip6)
                     destHost = InetAddress.getByAddress(ip6).hostAddress ?: "::1"
+                }
+                else -> {
+                    client.close()
+                    return
                 }
             }
 
             val portHigh = inStream.read()
             val portLow = inStream.read()
+            if (portHigh < 0 || portLow < 0) return
             val destPort = (portHigh shl 8) or portLow
 
-            // Open remote VMess connection
+            // Open remote VLESS / VMess connection
             val tunnel = vmessEngine.openRemoteConnection(destHost, destPort)
 
             // Respond success: 0x05, 0x00 (succeeded), 0x00 (RSV), 0x01 (IPv4), 0,0,0,0, 0,0
@@ -133,36 +149,117 @@ class LocalProxyServer(
         }
     }
 
+    private fun readRawHttpHeader(inStream: InputStream): String {
+        val baos = java.io.ByteArrayOutputStream()
+        var state = 0 // 0: normal, 1: \r, 2: \r\n, 3: \r\n\r, 4: \r\n\r\n
+        while (true) {
+            val b = inStream.read()
+            if (b == -1) break
+            baos.write(b)
+            when (state) {
+                0 -> if (b == '\r'.code) state = 1 else if (b == '\n'.code) state = 2
+                1 -> if (b == '\n'.code) state = 2 else state = 0
+                2 -> if (b == '\r'.code) state = 3 else if (b == '\n'.code) break else state = 0
+                3 -> if (b == '\n'.code) break else state = 0
+            }
+        }
+        return baos.toString(StandardCharsets.UTF_8.name())
+    }
+
     private fun handleHttpClient(client: Socket) {
         try {
             client.tcpNoDelay = true
             val inStream = client.getInputStream()
             val outStream = client.getOutputStream()
 
-            val reader = inStream.bufferedReader(StandardCharsets.UTF_8)
-            val initialLine = reader.readLine() ?: return
+            val rawHeader = readRawHttpHeader(inStream)
+            if (rawHeader.isEmpty()) return
+
+            val lines = rawHeader.split("\r\n")
+            val initialLine = lines.firstOrNull() ?: return
+
+            // Check for Android NetworkMonitor captive portal / connectivity validation probes
+            val isCaptiveCheck = initialLine.contains("generate_204", ignoreCase = true) ||
+                    initialLine.contains("gen_204", ignoreCase = true) ||
+                    rawHeader.contains("connectivitycheck.gstatic.com", ignoreCase = true) ||
+                    rawHeader.contains("connectivitycheck.android.com", ignoreCase = true) ||
+                    rawHeader.contains("clients3.google.com", ignoreCase = true) ||
+                    rawHeader.contains("detectportal.firefox.com", ignoreCase = true) ||
+                    rawHeader.contains("captive.apple.com", ignoreCase = true) ||
+                    rawHeader.contains("msftconnecttest.com", ignoreCase = true)
+
+            if (isCaptiveCheck) {
+                if (rawHeader.contains("captive.apple.com", ignoreCase = true)) {
+                    val body = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+                    outStream.write(resp.toByteArray(StandardCharsets.UTF_8))
+                    outStream.flush()
+                } else {
+                    // Immediately return standard HTTP 204 No Content so Android marks Wi-Fi and VPN as validated
+                    val resp = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    outStream.write(resp.toByteArray(StandardCharsets.UTF_8))
+                    outStream.flush()
+                }
+                return
+            }
 
             if (initialLine.startsWith("CONNECT ", ignoreCase = true)) {
                 // CONNECT host:port HTTP/1.1
                 val parts = initialLine.split(" ")
                 val hostPort = parts[1].split(":")
                 val host = hostPort[0]
-                val port = if (hostPort.size > 1) hostPort[1].toInt() else 443
+                val port = if (hostPort.size > 1) hostPort[1].toIntOrNull() ?: 443 else 443
 
-                // Drain rest of headers
-                var line = reader.readLine()
-                while (!line.isNullOrEmpty()) {
-                    line = reader.readLine()
-                }
-
-                // Connect to remote VMess
+                // Connect to remote VLESS / VMess
                 val tunnel = vmessEngine.openRemoteConnection(host, port)
 
-                // Send 200 OK
+                // Send 200 Connection Established
                 outStream.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
                 outStream.flush()
 
+                // Tunnel remainder of TLS handshake / duplex traffic
                 tunnel.relayDuplex(inStream, outStream)
+            } else {
+                // Transparent HTTP GET / POST
+                var hostHeader = ""
+                for (line in lines) {
+                    if (line.startsWith("Host:", ignoreCase = true)) {
+                        hostHeader = line.substring(5).trim()
+                        break
+                    }
+                }
+
+                if (hostHeader.isNotEmpty()) {
+                    val hp = hostHeader.split(":")
+                    val targetHost = hp[0]
+                    val targetPort = if (hp.size > 1) hp[1].toIntOrNull() ?: 80 else 80
+
+                    // Rewrite absolute URI in request line (e.g. "GET http://example.com/foo" -> "GET /foo")
+                    val firstLineParts = initialLine.split(" ")
+                    val method = firstLineParts.getOrNull(0) ?: "GET"
+                    val rawUri = firstLineParts.getOrNull(1) ?: "/"
+                    val version = firstLineParts.getOrNull(2) ?: "HTTP/1.1"
+
+                    val relativePath = if (rawUri.startsWith("http://", ignoreCase = true)) {
+                        val slashIdx = rawUri.indexOf('/', 7)
+                        if (slashIdx != -1) rawUri.substring(slashIdx) else "/"
+                    } else rawUri
+
+                    val rewrittenLines = mutableListOf<String>()
+                    rewrittenLines.add("$method $relativePath $version")
+                    for (i in 1 until lines.size) {
+                        rewrittenLines.add(lines[i])
+                    }
+                    val requestToSend = rewrittenLines.joinToString("\r\n") + "\r\n\r\n"
+
+                    val tunnel = vmessEngine.openRemoteConnection(targetHost, targetPort)
+                    // Write normalized HTTP request header to tunnel
+                    tunnel.outputStream.write(requestToSend.toByteArray(StandardCharsets.UTF_8))
+                    tunnel.outputStream.flush()
+
+                    // Relay remainder of request / response
+                    tunnel.relayDuplex(inStream, outStream)
+                }
             }
         } catch (e: Exception) {
             // Client closed or connection aborted

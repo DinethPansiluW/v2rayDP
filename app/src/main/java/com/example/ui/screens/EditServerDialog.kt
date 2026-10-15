@@ -43,6 +43,7 @@ import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceBorder
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.appSwitchColors
 import java.util.UUID
 
 @Composable
@@ -199,7 +200,7 @@ fun EditServerDialog(
                     Switch(
                         checked = isTls,
                         onCheckedChange = { isTls = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = AccentCyan)
+                        colors = appSwitchColors()
                     )
                 }
 

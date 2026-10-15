@@ -20,8 +20,12 @@ class PreferencesRepository(context: Context) {
     fun updateAutomationSettings(newSettings: AutomationSettings) {
         prefs.edit().apply {
             putBoolean(KEY_AUTO_ENABLED, newSettings.isAutomationGloballyEnabled)
+            putBoolean(KEY_START_ON_LAUNCH, newSettings.startOnLaunch)
+            putBoolean(KEY_BACKGROUND_RUN, newSettings.backgroundRunEnabled)
+            putBoolean(KEY_WIFI_SSID_PERMISSION, newSettings.wifiSsidPermissionEnabled)
             putBoolean(KEY_WIFI_AUTO_START, newSettings.autoStartOnWifi)
             putBoolean(KEY_WIFI_MATCH_ANY, newSettings.matchAnyWifiNetwork)
+            putString(KEY_WIFI_SPECIFIC_SSID, newSettings.specificSsid)
             putStringSet(KEY_WIFI_TARGET_SSIDS, newSettings.targetWifiSsids)
             putLong(KEY_WIFI_PROFILE_ID, newSettings.wifiProfileId ?: -1L)
             putBoolean(KEY_WIFI_AUTO_STOP_LEAVE, newSettings.autoStopOnWifiLeave)
@@ -62,8 +66,12 @@ class PreferencesRepository(context: Context) {
 
         return AutomationSettings(
             isAutomationGloballyEnabled = prefs.getBoolean(KEY_AUTO_ENABLED, true),
+            startOnLaunch = prefs.getBoolean(KEY_START_ON_LAUNCH, false),
+            backgroundRunEnabled = prefs.getBoolean(KEY_BACKGROUND_RUN, true),
+            wifiSsidPermissionEnabled = prefs.getBoolean(KEY_WIFI_SSID_PERMISSION, true),
             autoStartOnWifi = prefs.getBoolean(KEY_WIFI_AUTO_START, true),
             matchAnyWifiNetwork = prefs.getBoolean(KEY_WIFI_MATCH_ANY, true),
+            specificSsid = prefs.getString(KEY_WIFI_SPECIFIC_SSID, "") ?: "",
             targetWifiSsids = prefs.getStringSet(KEY_WIFI_TARGET_SSIDS, emptySet()) ?: emptySet(),
             wifiProfileId = if (wifiProfId > 0) wifiProfId else null,
             autoStopOnWifiLeave = prefs.getBoolean(KEY_WIFI_AUTO_STOP_LEAVE, true),
@@ -72,7 +80,7 @@ class PreferencesRepository(context: Context) {
             autoReconnectOnWifiReturn = prefs.getBoolean(KEY_WIFI_AUTO_RECONNECT, true),
 
             autoStartOnMobileData = prefs.getBoolean(KEY_MOBILE_AUTO_START, false),
-            autoStopOnMobileDataDisabled = prefs.getBoolean(KEY_MOBILE_AUTO_STOP, false),
+            autoStopOnMobileDataDisabled = prefs.getBoolean(KEY_MOBILE_AUTO_STOP, true),
             mobileProfileId = if (mobileProfId > 0) mobileProfId else null,
 
             manualOverrideSuppressed = prefs.getBoolean(KEY_MANUAL_OVERRIDE, false),
@@ -99,8 +107,12 @@ class PreferencesRepository(context: Context) {
 
     companion object {
         private const val KEY_AUTO_ENABLED = "auto_globally_enabled"
+        private const val KEY_START_ON_LAUNCH = "start_on_launch"
+        private const val KEY_BACKGROUND_RUN = "background_run_enabled"
+        private const val KEY_WIFI_SSID_PERMISSION = "wifi_ssid_permission_enabled"
         private const val KEY_WIFI_AUTO_START = "wifi_auto_start"
         private const val KEY_WIFI_MATCH_ANY = "wifi_match_any"
+        private const val KEY_WIFI_SPECIFIC_SSID = "wifi_specific_ssid"
         private const val KEY_WIFI_TARGET_SSIDS = "wifi_target_ssids"
         private const val KEY_WIFI_PROFILE_ID = "wifi_profile_id"
         private const val KEY_WIFI_AUTO_STOP_LEAVE = "wifi_auto_stop_leave"

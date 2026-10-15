@@ -140,6 +140,18 @@ class V2RayVpnService : VpnService() {
                 when (state) {
                     is ConnectionState.Connected -> {
                         hasStartedConnecting = true
+                        // Link VPN to system underlying default network (Wi-Fi/Cellular) to eliminate "no internet" ! warning
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                            try {
+                                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                                val activeNet = cm?.activeNetwork
+                                if (activeNet != null) {
+                                    setUnderlyingNetworks(arrayOf(activeNet))
+                                } else {
+                                    setUnderlyingNetworks(null)
+                                }
+                            } catch (_: Exception) {}
+                        }
                         updateNotification(
                             "Connected to ${state.profile.name}",
                             "SOCKS5 Proxy on :${state.localProxyPort}"
@@ -225,6 +237,7 @@ class V2RayVpnService : VpnService() {
 
     fun stopVpn(reason: String = "User requested stop") {
         logEvent("INFO", "Stopping VPN: $reason")
+        _serviceState.value = ConnectionState.Disconnected(reason)
         coreManager?.stopCore(reason)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -278,6 +291,7 @@ class V2RayVpnService : VpnService() {
             private set
 
         fun start(context: Context, profileId: Long? = null) {
+            _serviceState.value = ConnectionState.Connecting("v2rayDP", "Connecting…")
             val intent = Intent(context, V2RayVpnService::class.java).apply {
                 action = ACTION_START
                 if (profileId != null) {
@@ -292,6 +306,7 @@ class V2RayVpnService : VpnService() {
         }
 
         fun stop(context: Context, reason: String = "User requested disconnect") {
+            _serviceState.value = ConnectionState.Disconnected(reason)
             val intent = Intent(context, V2RayVpnService::class.java).apply {
                 action = ACTION_STOP
                 putExtra(EXTRA_REASON, reason)
