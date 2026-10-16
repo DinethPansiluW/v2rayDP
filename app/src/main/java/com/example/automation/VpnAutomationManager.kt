@@ -1,26 +1,22 @@
 package com.example.automation
 
 import android.app.PendingIntent
-import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.VpnService
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
-import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.example.R
 import com.example.V2RayApplication
-import com.example.core.V2RayCoreManager
 import com.example.model.AppLog
 import com.example.model.AutomationSettings
 import com.example.model.ConnectionState
@@ -30,16 +26,15 @@ import com.example.service.V2RayVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 class VpnAutomationManager(private val context: Context) {
 
@@ -48,15 +43,19 @@ class VpnAutomationManager(private val context: Context) {
 
     private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
+    // Dynamic in-process callback and receiver (active ONLY while app is in foreground)
     private var inProcessCallback: ConnectivityManager.NetworkCallback? = null
     private var wifiStateReceiver: BroadcastReceiver? = null
+    private var isForegroundActive = false
 
-    // Channel/Flow to funnel all events into a single debounced evaluation stream
-    private val eventFlow = MutableSharedFlow<String>(
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
+    // Tracked map of Network -> NetworkCapabilities (Item 9: replaces deprecated allNetworks)
+    private val networkCapabilitiesMap = ConcurrentHashMap<Network, NetworkCapabilities>()
+    private val networkSsidMap = ConcurrentHashMap<Network, String?>()
+
+    // Conflated channel for in-process debounced events (Item 2)
+    private val inProcessChannel = Channel<String>(Channel.CONFLATED)
 
     private val _currentSsid = MutableStateFlow<String?>(null)
     val currentSsid: StateFlow<String?> = _currentSsid.asStateFlow()
@@ -76,10 +75,10 @@ class VpnAutomationManager(private val context: Context) {
     // Handover grace period job
     private var handoverGraceJob: Job? = null
 
-    // User paused flag until physical network changes
-    private var userPausedUntilNetworkChange = false
-    private var pausedNetworkType: String? = null
-    private var pausedSsid: String? = null
+    // Cooldown & retry state (Item 6)
+    private var lastActionTimestamp = 0L
+    private var autoRetryCount = 0
+    private var lastRetryNetworkKey: String? = null
 
     private val networkRequest = NetworkRequest.Builder()
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -89,71 +88,104 @@ class VpnAutomationManager(private val context: Context) {
     fun initialize() {
         _isWifiRadioEnabled.value = wifiManager?.isWifiEnabled ?: true
 
-        // 1. Start event debounce collector
-        scope.launch {
-            eventFlow
-                .debounce(DEBOUNCE_MS)
-                .collect { source ->
-                    actionMutex.withLock {
-                        evaluateNetworkStateInternal(source)
-                    }
-                }
-        }
+        // 1. Register system PendingIntent network callback (API 26+) for background monitoring
+        registerBackgroundPendingIntentCallback()
 
-        // 2. Register callbacks & receivers
-        registerMonitoring()
+        // 2. Start in-process channel consumer with 800ms conflated delay
+        scope.launch {
+            for (source in inProcessChannel) {
+                delay(DEBOUNCE_MS)
+                evaluateNow(source)
+            }
+        }
 
         // 3. Initial evaluation
         notifyNetworkEvent("init")
     }
 
-    private fun registerMonitoring() {
-        // API 26+: Register system PendingIntent network callback (survives process death)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && connectivityManager != null) {
-            try {
-                val intent = Intent(context, NetworkChangeReceiver::class.java).apply {
-                    action = NetworkChangeReceiver.ACTION_CONNECTIVITY_CALLBACK
-                }
-                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-                } else {
-                    PendingIntent.FLAG_UPDATE_CURRENT
-                }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context,
-                    NetworkChangeReceiver.REQUEST_CODE_NETWORK_CALLBACK,
-                    intent,
-                    flags
-                )
-                connectivityManager.registerNetworkCallback(networkRequest, pendingIntent)
-            } catch (e: Exception) {
-                logAutoEvent("WARN", "PendingIntent network callback registration: ${e.message}")
-            }
-        }
+    // --- Lifecycle observation (Item 8: in-process callback only while in foreground) ---
 
-        // API 24-25: Start foreground Automation monitor service
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            try {
-                val monitorIntent = Intent(context, AutomationMonitorService::class.java)
-                context.startService(monitorIntent)
-            } catch (e: Exception) {
-                logAutoEvent("WARN", "AutomationMonitorService start: ${e.message}")
-            }
-        }
+    fun onAppForegrounded() {
+        isForegroundActive = true
+        registerInProcessMonitoring()
+        notifyNetworkEvent("foreground")
+    }
 
-        // In-process network callback for fast evaluation while process is alive
+    fun onAppBackgrounded() {
+        isForegroundActive = false
+        unregisterInProcessMonitoring()
+    }
+
+    private fun registerBackgroundPendingIntentCallback() {
+        if (connectivityManager == null) return
+        try {
+            val intent = Intent(context, NetworkChangeReceiver::class.java).apply {
+                action = NetworkChangeReceiver.ACTION_CONNECTIVITY_CALLBACK
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                NetworkChangeReceiver.REQUEST_CODE_NETWORK_CALLBACK,
+                intent,
+                flags
+            )
+            connectivityManager.registerNetworkCallback(networkRequest, pendingIntent)
+        } catch (e: Exception) {
+            logAutoEvent("WARN", "PendingIntent network callback registration failed: ${e.message}", source = "init")
+        }
+    }
+
+    private fun registerInProcessMonitoring() {
         if (connectivityManager != null && inProcessCallback == null) {
-            val cb = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    notifyNetworkEvent("cb_onAvailable")
-                }
+            val cb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                    override fun onAvailable(network: Network) {
+                        notifyNetworkEvent("cb_onAvailable")
+                    }
 
-                override fun onLost(network: Network) {
-                    notifyNetworkEvent("cb_onLost")
-                }
+                    override fun onLost(network: Network) {
+                        networkCapabilitiesMap.remove(network)
+                        networkSsidMap.remove(network)
+                        notifyNetworkEvent("cb_onLost")
+                    }
 
-                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                    notifyNetworkEvent("cb_onCapabilitiesChanged")
+                    override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                        networkCapabilitiesMap[network] = caps
+                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                            val transportInfo = caps.transportInfo
+                            if (transportInfo is WifiInfo) {
+                                networkSsidMap[network] = cleanSsidString(transportInfo.ssid)
+                            }
+                        }
+                        notifyNetworkEvent("cb_onCapabilitiesChanged")
+                    }
+                }
+            } else {
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        notifyNetworkEvent("cb_onAvailable")
+                    }
+
+                    override fun onLost(network: Network) {
+                        networkCapabilitiesMap.remove(network)
+                        networkSsidMap.remove(network)
+                        notifyNetworkEvent("cb_onLost")
+                    }
+
+                    override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                        networkCapabilitiesMap[network] = caps
+                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val transportInfo = caps.transportInfo
+                            if (transportInfo is WifiInfo) {
+                                networkSsidMap[network] = cleanSsidString(transportInfo.ssid)
+                            }
+                        }
+                        notifyNetworkEvent("cb_onCapabilitiesChanged")
+                    }
                 }
             }
             inProcessCallback = cb
@@ -162,8 +194,25 @@ class VpnAutomationManager(private val context: Context) {
             } catch (_: Exception) {}
         }
 
-        // Dynamic receiver for Wi-Fi radio toggle only (RECEIVER_NOT_EXPORTED)
         registerDynamicWifiReceiver()
+    }
+
+    private fun unregisterInProcessMonitoring() {
+        inProcessCallback?.let {
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+            inProcessCallback = null
+        }
+        networkCapabilitiesMap.clear()
+        networkSsidMap.clear()
+
+        wifiStateReceiver?.let {
+            try {
+                context.unregisterReceiver(it)
+            } catch (_: Exception) {}
+            wifiStateReceiver = null
+        }
     }
 
     private fun registerDynamicWifiReceiver() {
@@ -185,49 +234,40 @@ class VpnAutomationManager(private val context: Context) {
                 ContextCompat.RECEIVER_NOT_EXPORTED
             )
             wifiStateReceiver = receiver
-        } catch (e: Exception) {
-            logAutoEvent("WARN", "Failed to register wifi receiver: ${e.message}")
-        }
+        } catch (_: Exception) {}
     }
 
-    fun onBootCompleted() {
+    suspend fun onBootCompleted() {
         val app = V2RayApplication.get()
         val settings = app.preferencesRepository.getAutomationSettings()
         if (settings.isAutomationGloballyEnabled) {
-            registerMonitoring()
-            notifyNetworkEvent("boot_completed")
+            registerBackgroundPendingIntentCallback()
+            evaluateNow("boot_completed")
         }
     }
 
     fun notifyNetworkEvent(source: String) {
-        eventFlow.tryEmit(source)
+        inProcessChannel.trySend(source)
     }
 
     fun forceEvaluateNow() {
-        notifyNetworkEvent("force_evaluate")
-    }
-
-    fun onUserExplicitDisconnect() {
-        userPausedUntilNetworkChange = true
-        val status = checkCurrentPhysicalNetworks()
-        if (status.hasWifi) {
-            pausedNetworkType = "WIFI"
-            pausedSsid = cleanSsidString(detectCurrentWifiSsid(status.wifiCaps))
-        } else if (status.hasCellular) {
-            pausedNetworkType = "CELLULAR"
-            pausedSsid = null
-        } else {
-            pausedNetworkType = "NONE"
-            pausedSsid = null
+        scope.launch {
+            evaluateNow("force_evaluate")
         }
-        _lastAutomationStatus.value = "Paused by user disconnect until network changes"
-        logAutoEvent("INFO", "User manually disconnected. Automation paused until physical network switches.", "User Manual Disconnect")
     }
 
-    fun onUserExplicitConnect() {
-        userPausedUntilNetworkChange = false
-        pausedNetworkType = null
-        pausedSsid = null
+    suspend fun evaluateNetworkState() {
+        evaluateNow("direct_evaluate")
+    }
+
+    /**
+     * Executes evaluation immediately inside the caller's coroutine window (Item 2).
+     * Protected by the shared actionMutex so concurrent evaluations never overlap.
+     */
+    suspend fun evaluateNow(source: String) {
+        actionMutex.withLock {
+            evaluateNetworkStateInternal(source)
+        }
     }
 
     fun onWifiStateChanged(wifiState: Int) {
@@ -241,11 +281,11 @@ class VpnAutomationManager(private val context: Context) {
                 _currentSsid.value = null
 
                 if (settings.isAutomationGloballyEnabled && settings.autoStopOnWifiOff) {
-                    val coreState = V2RayCoreManager.currentConnectionState.value
-                    if (coreState.isRunning) {
+                    val currentState = V2RayVpnService.serviceState.value
+                    if (currentState.isRunning) {
                         _lastAutomationStatus.value = "Wi-Fi turned OFF -> Auto-stopping VPN"
-                        logAutoEvent("AUTO", "Wi-Fi radio switched OFF. Auto-stopping VPN service.", "Wi-Fi disabled by user")
-                        V2RayVpnService.stop(context, "Wi-Fi disabled by user", isAutomated = true)
+                        logAutoEvent("AUTO", "Wi-Fi radio switched OFF. Auto-stopping VPN service.", getCurrentNetworkKey(), null, "wifi_radio_off")
+                        stopVpnWithCooldown("Wi-Fi disabled by user")
                     }
                 }
             } else if (wifiState == WifiManager.WIFI_STATE_ENABLED) {
@@ -255,113 +295,192 @@ class VpnAutomationManager(private val context: Context) {
         }
     }
 
-    suspend fun evaluateNetworkState() {
-        notifyNetworkEvent("direct_evaluate")
-    }
-
     data class PhysicalNetworkStatus(
-        val hasWifi: Boolean,
+        val isWifiUsable: Boolean,
+        val wifiNetwork: Network?,
         val wifiCaps: NetworkCapabilities?,
-        val hasCellular: Boolean
+        val isCellularUsable: Boolean,
+        val cellNetwork: Network?,
+        val cellCaps: NetworkCapabilities?
     )
 
     private fun checkCurrentPhysicalNetworks(): PhysicalNetworkStatus {
-        val allNetworks = connectivityManager?.allNetworks ?: emptyArray()
-        var hasWifi = false
+        var wifiNet: Network? = null
         var wifiCaps: NetworkCapabilities? = null
-        var hasCellular = false
+        var cellNet: Network? = null
+        var cellCaps: NetworkCapabilities? = null
 
-        for (net in allNetworks) {
-            val caps = connectivityManager?.getNetworkCapabilities(net) ?: continue
-            // Exclude TRANSPORT_VPN to use only physical networks
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                continue
-            }
+        // Check tracked capability map first
+        for ((net, caps) in networkCapabilitiesMap) {
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+
             val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            val isValidated = !REQUIRE_VALIDATED_INTERNET || caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && hasInternet && isValidated) {
-                hasWifi = true
-                wifiCaps = caps
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                if (hasInternet && isValidated) {
+                    wifiNet = net
+                    wifiCaps = caps
+                }
             }
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) && hasInternet && isValidated) {
-                hasCellular = true
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                if (hasInternet && isValidated) {
+                    cellNet = net
+                    cellCaps = caps
+                }
             }
         }
-        return PhysicalNetworkStatus(hasWifi, wifiCaps, hasCellular)
+
+        // If tracked map was empty (e.g. background wake), query active network from ConnectivityManager
+        if (wifiCaps == null && cellCaps == null && connectivityManager != null) {
+            val activeNet = connectivityManager.activeNetwork
+            if (activeNet != null) {
+                val caps = connectivityManager.getNetworkCapabilities(activeNet)
+                if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    if (hasInternet && isValidated) {
+                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                            wifiNet = activeNet
+                            wifiCaps = caps
+                            networkCapabilitiesMap[activeNet] = caps
+                        } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                            cellNet = activeNet
+                            cellCaps = caps
+                            networkCapabilitiesMap[activeNet] = caps
+                        }
+                    }
+                }
+            }
+        }
+
+        val isWifiUsable = wifiCaps != null
+        val isCellularUsable = cellCaps != null
+
+        return PhysicalNetworkStatus(
+            isWifiUsable = isWifiUsable,
+            wifiNetwork = wifiNet,
+            wifiCaps = wifiCaps,
+            isCellularUsable = isCellularUsable,
+            cellNetwork = cellNet,
+            cellCaps = cellCaps
+        )
+    }
+
+    fun getCurrentNetworkKey(): String {
+        val status = checkCurrentPhysicalNetworks()
+        return if (status.isWifiUsable) {
+            val ssid = cleanSsidString(detectCurrentWifiSsid(status.wifiNetwork, status.wifiCaps))
+            "WIFI:${ssid ?: "<no-ssid>"}"
+        } else if (status.isCellularUsable) {
+            "CELLULAR:cell"
+        } else {
+            "NONE:none"
+        }
     }
 
     private suspend fun evaluateNetworkStateInternal(source: String) {
         val app = V2RayApplication.get()
-        val settings = app.preferencesRepository.getAutomationSettings()
+        val prefs = app.preferencesRepository
+        val settings = prefs.getAutomationSettings()
 
         if (!settings.isAutomationGloballyEnabled) {
             _lastAutomationStatus.value = "Automation is globally disabled"
             return
         }
 
-        if (!settings.backgroundRunEnabled && source != "force_evaluate") {
-            _lastAutomationStatus.value = "Background Run is disabled (Automation paused)"
+        // State Machine Guard (Item 6 & 7):
+        // Single source of truth is V2RayVpnService.serviceState
+        val serviceState = V2RayVpnService.serviceState.value
+
+        if (serviceState is ConnectionState.Connecting) {
+            logAutoEvent("SKIP", "Ignoring evaluation: VPN service is currently Connecting", getCurrentNetworkKey(), null, source)
+            return
+        }
+        if (serviceState is ConnectionState.Disconnected && serviceState.reason.startsWith("Stopping")) {
+            logAutoEvent("SKIP", "Ignoring evaluation: VPN service is currently Stopping", getCurrentNetworkKey(), null, source)
             return
         }
 
-        if (settings.manualOverrideSuppressed && source != "force_evaluate") {
-            _lastAutomationStatus.value = "Suppressed by Manual Override (${settings.manualOverrideReason})"
-            return
+        // Reset retry count on connected
+        if (serviceState is ConnectionState.Connected) {
+            autoRetryCount = 0
         }
 
-        // State drift / feedback loop rule:
-        // Do not evaluate while core is in CONNECTING state. Ignore network events until it settles.
-        val coreState = V2RayCoreManager.currentConnectionState.value
-        if (coreState is ConnectionState.Connecting) {
-            return
+        // Inspect physical networks with strict quality validation (Item 9)
+        val netStatus = checkCurrentPhysicalNetworks()
+        val isWifiUsable = netStatus.isWifiUsable
+        val isCellularUsable = netStatus.isCellularUsable
+
+        _isWifiConnected.value = isWifiUsable
+        _isCellularConnected.value = isCellularUsable
+        _isWifiRadioEnabled.value = wifiManager?.isWifiEnabled ?: isWifiUsable
+
+        val detectedSsid = if (isWifiUsable) detectCurrentWifiSsid(netStatus.wifiNetwork, netStatus.wifiCaps) else null
+        val currentCleanSsid = cleanSsidString(detectedSsid)
+        _currentSsid.value = currentCleanSsid
+
+        // Compute current network key (Item 1)
+        val currentNetworkKey = when {
+            isWifiUsable -> "WIFI:${currentCleanSsid ?: "<no-ssid>"}"
+            isCellularUsable -> "CELLULAR:cell"
+            else -> "NONE:none"
         }
 
-        val (hasWifi, wifiCaps, hasCellular) = checkCurrentPhysicalNetworks()
-        _isWifiConnected.value = hasWifi
-        _isCellularConnected.value = hasCellular
-        _isWifiRadioEnabled.value = wifiManager?.isWifiEnabled ?: hasWifi
-
-        // Check user paused state: unpause ONLY when physical network switches
-        if (userPausedUntilNetworkChange) {
-            val currentType = when {
-                hasWifi -> "WIFI"
-                hasCellular -> "CELLULAR"
-                else -> "NONE"
+        // Error retry guard (Item 6: at most 2 retries per network key)
+        if (serviceState is ConnectionState.Error) {
+            if (lastRetryNetworkKey != currentNetworkKey) {
+                autoRetryCount = 0
+                lastRetryNetworkKey = currentNetworkKey
             }
-            val currentDetectedSsid = if (hasWifi) cleanSsidString(detectCurrentWifiSsid(wifiCaps)) else null
-            val hasSwitched = when {
-                currentType != pausedNetworkType -> true
-                currentType == "WIFI" && currentDetectedSsid != null && pausedSsid != null &&
-                        !currentDetectedSsid.equals(pausedSsid, ignoreCase = true) -> true
-                else -> false
-            }
-
-            if (hasSwitched) {
-                userPausedUntilNetworkChange = false
-                pausedNetworkType = null
-                pausedSsid = null
-                logAutoEvent("AUTO", "Physical network switched ($pausedNetworkType -> $currentType). Automation unpaused.", "Network Switched")
-            } else {
-                _lastAutomationStatus.value = "Paused: waiting for physical network change"
+            if (autoRetryCount >= 2 && source != "force_evaluate") {
+                _lastAutomationStatus.value = "Automatic retries exhausted for this network (2/2 attempts failed)"
+                logAutoEvent("SKIP", "Max auto-retries reached (2/2) for network $currentNetworkKey", currentNetworkKey, currentCleanSsid, source)
                 return
             }
         }
 
-        val isVpnRunning = coreState.isRunning
+        // 5s post-action cooldown (Item 6)
+        val now = System.currentTimeMillis()
+        if (now - lastActionTimestamp < 5000L && source != "force_evaluate" && source != "init") {
+            logAutoEvent("SKIP", "Ignoring evaluation during 5s post-action cooldown", currentNetworkKey, currentCleanSsid, source)
+            return
+        }
+
+        // Check manual override (Item 1: network-scoped persisted override)
+        if (settings.manualOverrideSuppressed) {
+            if (settings.manualOverrideNetworkKey != null && settings.manualOverrideNetworkKey == currentNetworkKey && source != "force_evaluate") {
+                _lastAutomationStatus.value = "Paused by manual stop (this network)"
+                logAutoEvent("SKIP", "Paused by manual stop on this network ($currentNetworkKey)", currentNetworkKey, currentCleanSsid, source)
+                return
+            } else {
+                // Physical network changed -> clear manual override!
+                prefs.clearManualOverride()
+                logAutoEvent("AUTO", "Physical network switched (${settings.manualOverrideNetworkKey} -> $currentNetworkKey). Manual override cleared.", currentNetworkKey, currentCleanSsid, source)
+            }
+        }
+
+        val isVpnRunning = serviceState.isRunning
 
         // 1. Handover Grace Period & Disconnect Check:
-        if (hasWifi || hasCellular) {
-            // Cancel any pending handover stop if network returned
+        if (isWifiUsable || isCellularUsable) {
+            // Cancel pending handover stop if physical network restored
             if (handoverGraceJob?.isActive == true) {
                 handoverGraceJob?.cancel()
                 handoverGraceJob = null
-                logAutoEvent("AUTO", "Physical network restored within handover grace period. Disconnect cancelled.", "Handover Recovered")
+                logAutoEvent("AUTO", "Physical network restored within handover grace period. Disconnect cancelled.", currentNetworkKey, currentCleanSsid, source)
             }
         } else {
-            // All physical networks lost
+            // All usable physical networks lost
             _currentSsid.value = null
             if (isVpnRunning) {
+                // Item 3: when all networks are lost and autoStopOnMobileDataDisabled is false, do not stop the VPN!
+                if (!settings.autoStopOnMobileDataDisabled) {
+                    _lastAutomationStatus.value = "Networks lost, VPN kept running (auto-stop on network loss is OFF)"
+                    logAutoEvent("SKIP", "Networks lost but autoStopOnMobileDataDisabled is false; keeping VPN running", currentNetworkKey, null, source)
+                    return
+                }
+
                 if (handoverGraceJob?.isActive == true) {
                     return
                 }
@@ -370,12 +489,12 @@ class VpnAutomationManager(private val context: Context) {
                     delay(HANDOVER_GRACE_PERIOD_MS)
                     actionMutex.withLock {
                         val recheck = checkCurrentPhysicalNetworks()
-                        if (!recheck.hasWifi && !recheck.hasCellular) {
-                            val latestState = V2RayCoreManager.currentConnectionState.value
+                        if (!recheck.isWifiUsable && !recheck.isCellularUsable) {
+                            val latestState = V2RayVpnService.serviceState.value
                             if (latestState.isRunning) {
                                 _lastAutomationStatus.value = "Networks lost after grace period -> Stopped VPN"
-                                logAutoEvent("AUTO", "All physical networks remained lost for ${HANDOVER_GRACE_PERIOD_MS / 1000}s. Auto-stopping VPN.", "Handover Grace Expired")
-                                V2RayVpnService.stop(context, "Network lost (Handover grace expired)", isAutomated = true)
+                                logAutoEvent("AUTO", "All physical networks remained lost for ${HANDOVER_GRACE_PERIOD_MS / 1000}s. Auto-stopping VPN.", currentNetworkKey, null, source)
+                                stopVpnWithCooldown("Network lost (Handover grace expired)")
                             }
                         }
                         handoverGraceJob = null
@@ -384,24 +503,44 @@ class VpnAutomationManager(private val context: Context) {
                 return
             } else {
                 _lastAutomationStatus.value = "No network connections (Data & Wi-Fi OFF)"
+                logAutoEvent("SKIP", "No usable physical internet connection", currentNetworkKey, null, source)
                 return
             }
         }
 
-        // 2. Wi-Fi SSID Automation & "Any SSID" Toggle Logic:
-        if (hasWifi) {
-            val detectedSsid = detectCurrentWifiSsid(wifiCaps)
-            val currentCleanSsid = cleanSsidString(detectedSsid)
-            _currentSsid.value = currentCleanSsid
+        // 2. Wi-Fi Automation Logic:
+        if (isWifiUsable) {
+            // Clear mobile session leave policy when back on Wi-Fi
+            if (settings.stoppedByPolicyMobileSession) {
+                prefs.clearStoppedByPolicy()
+            }
+
+            // Item 3: autoReconnectOnWifiReturn logic
+            if (settings.stoppedByLeaveWifiSsid != null && currentCleanSsid != null &&
+                settings.stoppedByLeaveWifiSsid.equals(currentCleanSsid, ignoreCase = true)
+            ) {
+                if (!settings.autoReconnectOnWifiReturn) {
+                    _lastAutomationStatus.value = "Wi-Fi ($currentCleanSsid) returned, but auto-reconnect on return is OFF"
+                    logAutoEvent("SKIP", "Auto-reconnect on Wi-Fi return is disabled for $currentCleanSsid", currentNetworkKey, currentCleanSsid, source)
+                    return
+                } else {
+                    prefs.clearStoppedByLeaveWifiSsid()
+                }
+            }
 
             if (!settings.matchAnyWifiNetwork) {
-                // "Any SSID" is OFF: user requires specific SSID
+                // "Any SSID" is OFF: requires specific approved SSID match
+
+                // Item 5: Detect system location turned off
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && locationManager?.isLocationEnabled == false) {
+                    _lastAutomationStatus.value = "Turn on Location to read the Wi-Fi name"
+                    logAutoEvent("WARN", "System Location is turned off; cannot read Wi-Fi SSID", currentNetworkKey, currentCleanSsid, source)
+                    return
+                }
+
                 if (currentCleanSsid == null) {
-                    // Rule 4: If matchAnyWifiNetwork is false and SSID is null:
-                    // do NOT stop the VPN. Keep the current state, set status
-                    // "SSID unavailable - grant location permission and turn on Location"
-                    // so the user is informed, and do not oscillate the VPN on/off.
                     _lastAutomationStatus.value = "SSID unavailable - grant location permission and turn on Location"
+                    logAutoEvent("WARN", "SSID unavailable - location permission or service required", currentNetworkKey, null, source)
                     return
                 }
 
@@ -411,105 +550,124 @@ class VpnAutomationManager(private val context: Context) {
                         configuredClean.any { it.equals(currentCleanSsid, ignoreCase = true) }
 
                 if (isApproved) {
-                    handleApprovedWifi(currentCleanSsid, settings)
+                    handleApprovedWifi(currentCleanSsid, settings, currentNetworkKey, source)
                 } else {
                     if (isVpnRunning) {
                         _lastAutomationStatus.value = "Unapproved Wi-Fi SSID ($currentCleanSsid) -> Stopped VPN"
-                        logAutoEvent("AUTO", "Wi-Fi SSID ($currentCleanSsid) does not match approved target. Stopping VPN.", "SSID Mismatch")
-                        V2RayVpnService.stop(context, "Unapproved Wi-Fi SSID", isAutomated = true)
+                        logAutoEvent("AUTO", "Wi-Fi SSID ($currentCleanSsid) does not match approved target. Stopping VPN.", currentNetworkKey, currentCleanSsid, source)
+                        stopVpnWithCooldown("Unapproved Wi-Fi SSID")
                     } else {
                         _lastAutomationStatus.value = "Wi-Fi ($currentCleanSsid) does not match target SSID"
+                        logAutoEvent("SKIP", "Wi-Fi ($currentCleanSsid) is not in approved list", currentNetworkKey, currentCleanSsid, source)
                     }
                 }
             } else {
-                // "Any SSID" is ON: any active Wi-Fi network connects
-                handleApprovedWifi(currentCleanSsid ?: "Any Wi-Fi", settings)
+                // "Any SSID" is ON: any usable Wi-Fi network connects (no location permission needed)
+                handleApprovedWifi(currentCleanSsid ?: "Any Wi-Fi", settings, currentNetworkKey, source)
             }
-        } else if (hasCellular && !hasWifi) {
+        } else if (isCellularUsable && !isWifiUsable) {
+            // Mobile Data session
             _currentSsid.value = null
-            // Mobile Data only
+
             if (isVpnRunning) {
                 if (settings.autoStopOnWifiLeave) {
                     when (settings.wifiLeavePolicy) {
                         WifiLeavePolicy.STOP_VPN -> {
-                            _lastAutomationStatus.value = "Left Wi-Fi -> Stopped VPN per policy"
-                            logAutoEvent("AUTO", "Disconnected from Wi-Fi. Stopping VPN per leave policy.", "Left target Wi-Fi")
-                            V2RayVpnService.stop(context, "Left target Wi-Fi", isAutomated = true)
+                            // Item 4: persist stoppedByPolicy for current mobile session and do NOT auto-start on mobile
+                            prefs.setStoppedByPolicy(mobileSession = true, wifiSsid = currentCleanSsid)
+                            _lastAutomationStatus.value = "Left Wi-Fi -> Stopped VPN per policy (stay off on mobile)"
+                            logAutoEvent("AUTO", "Left Wi-Fi. Stopping VPN per STOP_VPN policy (stay off on mobile).", currentNetworkKey, null, source)
+                            stopVpnWithCooldown("Left target Wi-Fi (STOP_VPN)")
                         }
                         WifiLeavePolicy.SWITCH_TO_MOBILE -> {
-                            if (settings.autoStartOnMobileData) {
-                                val profile = V2RayVpnService.resolveProfile(settings.mobileProfileId)
-                                if (profile != null) {
-                                    _lastAutomationStatus.value = "Left Wi-Fi -> Switched to Mobile Data"
-                                    logAutoEvent("AUTO", "Switched from Wi-Fi to Mobile Data. Starting with mobile profile.", "Mobile Data Switch")
-                                    V2RayVpnService.start(context, profile.id, isAutomated = true)
-                                }
+                            _lastAutomationStatus.value = "Left Wi-Fi -> Switching to Mobile Data profile"
+                            logAutoEvent("AUTO", "Left Wi-Fi. Switching to Mobile Data profile.", currentNetworkKey, null, source)
+                            val profile = V2RayVpnService.resolveProfile(settings.mobileProfileId)
+                            if (profile != null) {
+                                startVpnWithCooldown(profile.id, "Left Wi-Fi (SWITCH_TO_MOBILE)")
                             } else {
-                                _lastAutomationStatus.value = "Left Wi-Fi -> Stopped VPN (Mobile Data auto-start disabled)"
-                                V2RayVpnService.stop(context, "Left target Wi-Fi", isAutomated = true)
+                                _lastAutomationStatus.value = "Left Wi-Fi, but no mobile profile configured"
+                                logAutoEvent("ERROR", "No profiles found for mobile data switch", currentNetworkKey, null, source)
                             }
                         }
                         WifiLeavePolicy.KEEP_VPN -> {
                             _lastAutomationStatus.value = "Left Wi-Fi -> VPN kept running on Mobile Data"
+                            logAutoEvent("SKIP", "Left Wi-Fi with KEEP_VPN policy. Seamlessly continuing.", currentNetworkKey, null, source)
                         }
                     }
                 } else {
                     _lastAutomationStatus.value = "VPN active on Mobile Data"
                 }
             } else {
+                // Item 4: if stopped by leave-policy on mobile, stay off until network switches
+                if (settings.stoppedByPolicyMobileSession) {
+                    _lastAutomationStatus.value = "Mobile Data active (Stopped by Wi-Fi leave policy)"
+                    logAutoEvent("SKIP", "Mobile Data auto-start suppressed by leave-Wi-Fi policy for this session", currentNetworkKey, null, source)
+                    return
+                }
+
                 if (settings.autoStartOnMobileData) {
+                    // Item 6: Mobile-data start path checks VpnService.prepare(context) == null
+                    if (VpnService.prepare(context) != null) {
+                        _lastAutomationStatus.value = "Open the app once to grant VPN permission"
+                        logAutoEvent("WARN", "Mobile Data active but VPN permission not yet granted", currentNetworkKey, null, source)
+                        return
+                    }
+
                     val profile = V2RayVpnService.resolveProfile(settings.mobileProfileId)
                     if (profile != null) {
                         _lastAutomationStatus.value = "Mobile Data active -> Started VPN"
-                        logAutoEvent("AUTO", "Mobile data connected. Auto-starting VPN…", "Mobile Data Connected")
-                        V2RayVpnService.start(context, profile.id, isAutomated = true)
+                        logAutoEvent("AUTO", "Mobile data connected. Auto-starting VPN…", currentNetworkKey, null, source)
+                        startVpnWithCooldown(profile.id, "Mobile Data active")
                     } else {
                         _lastAutomationStatus.value = "Mobile Data active, but no profiles configured"
+                        logAutoEvent("ERROR", "No profiles configured to auto-start VPN on mobile data", currentNetworkKey, null, source)
                     }
                 } else {
                     _lastAutomationStatus.value = "Mobile Data active (Auto-start on Mobile Data OFF)"
+                    logAutoEvent("SKIP", "Mobile Data active but auto-start on mobile is disabled", currentNetworkKey, null, source)
                 }
             }
         }
     }
 
-    private suspend fun handleApprovedWifi(ssidLabel: String, settings: AutomationSettings) {
-        val coreState = V2RayCoreManager.currentConnectionState.value
-        if (settings.autoStartOnWifi && !coreState.isRunning) {
-            if (android.net.VpnService.prepare(context) == null) {
+    private suspend fun handleApprovedWifi(
+        ssidLabel: String,
+        settings: AutomationSettings,
+        currentNetworkKey: String,
+        source: String
+    ) {
+        val serviceState = V2RayVpnService.serviceState.value
+        if (settings.autoStartOnWifi && !serviceState.isRunning) {
+            if (VpnService.prepare(context) == null) {
                 val profile = V2RayVpnService.resolveProfile(settings.wifiProfileId)
                 if (profile == null) {
                     _lastAutomationStatus.value = "Wi-Fi active ($ssidLabel), but no profiles configured"
-                    logAutoEvent("ERROR", "No profiles configured to auto-start VPN", "No Profiles")
+                    logAutoEvent("ERROR", "No profiles configured to auto-start VPN on Wi-Fi", currentNetworkKey, ssidLabel, source)
                     return
                 }
                 _lastAutomationStatus.value = "Connected to Wi-Fi ($ssidLabel) -> Auto-started VPN"
-                logAutoEvent("AUTO", "Approved Wi-Fi active ($ssidLabel). Auto-starting VPN…", "Approved Wi-Fi Connected")
-                V2RayVpnService.start(context, profile.id, isAutomated = true)
+                logAutoEvent("AUTO", "Approved Wi-Fi active ($ssidLabel). Auto-starting VPN…", currentNetworkKey, ssidLabel, source)
+                startVpnWithCooldown(profile.id, "Approved Wi-Fi ($ssidLabel)")
             } else {
                 _lastAutomationStatus.value = "Wi-Fi connected ($ssidLabel), tap Start in app once to grant VPN permission"
+                logAutoEvent("WARN", "Wi-Fi connected ($ssidLabel) but VPN permission is not yet prepared", currentNetworkKey, ssidLabel, source)
             }
-        } else if (coreState.isRunning) {
+        } else if (serviceState.isRunning) {
             _lastAutomationStatus.value = "VPN active on Wi-Fi ($ssidLabel)"
+            logAutoEvent("SKIP", "VPN already running on Wi-Fi ($ssidLabel)", currentNetworkKey, ssidLabel, source)
         }
     }
 
-    private fun detectCurrentWifiSsid(caps: NetworkCapabilities?): String? {
-        val app = V2RayApplication.get()
-        val settings = app.preferencesRepository.getAutomationSettings()
-
-        if (!settings.wifiSsidPermissionEnabled) {
-            return null
+    private fun detectCurrentWifiSsid(network: Network?, caps: NetworkCapabilities?): String? {
+        // 1. Check cached SSID from in-process callback with FLAG_INCLUDE_LOCATION_INFO (API 31+)
+        if (network != null) {
+            val cached = networkSsidMap[network]
+            if (cached != null) return cached
         }
 
-        // On API 31+ (Android 12 S), prefer NetworkCapabilities.transportInfo as WifiInfo
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && caps != null) {
-            val transportInfo = caps.transportInfo
-            if (transportInfo is WifiInfo) {
-                val clean = cleanSsidString(transportInfo.ssid)
-                if (clean != null) return clean
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
+        // 2. Read directly from NetworkCapabilities.transportInfo (API 29+)
+        if (caps != null) {
             val transportInfo = caps.transportInfo
             if (transportInfo is WifiInfo) {
                 val clean = cleanSsidString(transportInfo.ssid)
@@ -517,7 +675,7 @@ class VpnAutomationManager(private val context: Context) {
             }
         }
 
-        // Fallback to WifiManager.connectionInfo
+        // 3. Fallback to WifiManager.connectionInfo
         val hasLocationPerm = ContextCompat.checkSelfPermission(
             context,
             android.Manifest.permission.ACCESS_FINE_LOCATION
@@ -544,22 +702,44 @@ class VpnAutomationManager(private val context: Context) {
             return null
         }
         var s = raw.trim()
-        // Strip matching quotes: "MySSID" -> MySSID
         if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
             s = s.substring(1, s.length - 1)
         }
         return s.trim().ifEmpty { null }
     }
 
-    private fun logAutoEvent(level: String, message: String, triggerReason: String = "") {
+    private fun startVpnWithCooldown(profileId: Long?, triggerReason: String) {
+        autoRetryCount++
+        lastActionTimestamp = System.currentTimeMillis()
+        V2RayVpnService.start(context, profileId, isAutomated = true)
+    }
+
+    private fun stopVpnWithCooldown(reason: String) {
+        lastActionTimestamp = System.currentTimeMillis()
+        V2RayVpnService.stop(context, reason, isAutomated = true)
+    }
+
+    private fun logAutoEvent(
+        level: String,
+        message: String,
+        networkKey: String = getCurrentNetworkKey(),
+        ssid: String? = null,
+        source: String = ""
+    ) {
         scope.launch(Dispatchers.IO) {
             val app = V2RayApplication.get()
+            val fullMsg = buildString {
+                append(message)
+                if (networkKey.isNotEmpty()) append(" [net: $networkKey]")
+                if (!ssid.isNullOrEmpty()) append(" [ssid: $ssid]")
+                if (source.isNotEmpty()) append(" [src: $source]")
+            }
             app.database.appLogDao().insertLog(
                 AppLog(
                     tag = "Automation",
-                    message = message,
+                    message = fullMsg,
                     level = level,
-                    triggerReason = triggerReason
+                    triggerReason = if (source.isNotEmpty()) "Source: $source" else "Network Event"
                 )
             )
         }
@@ -568,84 +748,5 @@ class VpnAutomationManager(private val context: Context) {
     companion object {
         private const val DEBOUNCE_MS = 800L
         private const val HANDOVER_GRACE_PERIOD_MS = 4000L
-        private const val REQUIRE_VALIDATED_INTERNET = false
-    }
-}
-
-/**
- * Foreground service for API 24-25 devices to keep network callback active in the background
- */
-class AutomationMonitorService : Service() {
-
-    private var callback: ConnectivityManager.NetworkCallback? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        val notification = NotificationCompat.Builder(this, V2RayApplication.NOTIFICATION_CHANNEL_AUTOMATION)
-            .setSmallIcon(R.drawable.ic_vpn_key)
-            .setContentTitle("v2rayDP Automation Monitor")
-            .setContentText("Monitoring network state")
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setOngoing(true)
-            .build()
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NOTIFICATION_ID_AUTOMATION_MONITOR,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            } else {
-                startForeground(NOTIFICATION_ID_AUTOMATION_MONITOR, notification)
-            }
-        } catch (_: Exception) {}
-
-        registerNetworkCallback()
-    }
-
-    private fun registerNetworkCallback() {
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .build()
-
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                V2RayApplication.get().automationManager.notifyNetworkEvent("monitor_onAvailable")
-            }
-
-            override fun onLost(network: Network) {
-                V2RayApplication.get().automationManager.notifyNetworkEvent("monitor_onLost")
-            }
-
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                V2RayApplication.get().automationManager.notifyNetworkEvent("monitor_onCapabilitiesChanged")
-            }
-        }
-        callback = cb
-        try {
-            cm.registerNetworkCallback(request, cb)
-        } catch (_: Exception) {}
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
-
-    override fun onDestroy() {
-        callback?.let {
-            try {
-                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                cm?.unregisterNetworkCallback(it)
-            } catch (_: Exception) {}
-        }
-        super.onDestroy()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    companion object {
-        private const val NOTIFICATION_ID_AUTOMATION_MONITOR = 2002
     }
 }

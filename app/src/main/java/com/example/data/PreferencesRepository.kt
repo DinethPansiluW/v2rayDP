@@ -22,7 +22,6 @@ class PreferencesRepository(context: Context) {
             putBoolean(KEY_AUTO_ENABLED, newSettings.isAutomationGloballyEnabled)
             putBoolean(KEY_START_ON_LAUNCH, newSettings.startOnLaunch)
             putBoolean(KEY_BACKGROUND_RUN, newSettings.backgroundRunEnabled)
-            putBoolean(KEY_WIFI_SSID_PERMISSION, newSettings.wifiSsidPermissionEnabled)
             putBoolean(KEY_WIFI_AUTO_START, newSettings.autoStartOnWifi)
             putBoolean(KEY_WIFI_MATCH_ANY, newSettings.matchAnyWifiNetwork)
             putString(KEY_WIFI_SPECIFIC_SSID, newSettings.specificSsid)
@@ -37,8 +36,14 @@ class PreferencesRepository(context: Context) {
             putBoolean(KEY_MOBILE_AUTO_STOP, newSettings.autoStopOnMobileDataDisabled)
             putLong(KEY_MOBILE_PROFILE_ID, newSettings.mobileProfileId ?: -1L)
 
+            putLong(KEY_DEFAULT_PROFILE_ID, newSettings.defaultProfileId ?: -1L)
+
             putBoolean(KEY_MANUAL_OVERRIDE, newSettings.manualOverrideSuppressed)
             putString(KEY_MANUAL_OVERRIDE_REASON, newSettings.manualOverrideReason)
+            putString(KEY_MANUAL_OVERRIDE_NETWORK_KEY, newSettings.manualOverrideNetworkKey)
+
+            putBoolean(KEY_STOPPED_BY_POLICY_MOBILE, newSettings.stoppedByPolicyMobileSession)
+            putString(KEY_STOPPED_BY_LEAVE_WIFI_SSID, newSettings.stoppedByLeaveWifiSsid)
 
             putBoolean(KEY_HOTSPOT_ENABLED, newSettings.isHotspotSharingEnabled)
             putInt(KEY_HOTSPOT_PORT, newSettings.hotspotProxyPort)
@@ -48,13 +53,48 @@ class PreferencesRepository(context: Context) {
         _automationSettings.value = newSettings
     }
 
-    fun setManualOverride(suppressed: Boolean, reason: String = "") {
+    fun setManualOverride(source: String, networkKey: String?) {
         val current = _automationSettings.value
         val updated = current.copy(
-            manualOverrideSuppressed = suppressed,
-            manualOverrideReason = reason
+            manualOverrideSuppressed = true,
+            manualOverrideReason = source,
+            manualOverrideNetworkKey = networkKey
         )
         updateAutomationSettings(updated)
+    }
+
+    fun clearManualOverride() {
+        val current = _automationSettings.value
+        val updated = current.copy(
+            manualOverrideSuppressed = false,
+            manualOverrideReason = "",
+            manualOverrideNetworkKey = null,
+            stoppedByPolicyMobileSession = false
+        )
+        updateAutomationSettings(updated)
+    }
+
+    fun setStoppedByPolicy(mobileSession: Boolean, wifiSsid: String?) {
+        val current = _automationSettings.value
+        val updated = current.copy(
+            stoppedByPolicyMobileSession = mobileSession,
+            stoppedByLeaveWifiSsid = wifiSsid ?: current.stoppedByLeaveWifiSsid
+        )
+        updateAutomationSettings(updated)
+    }
+
+    fun clearStoppedByPolicy() {
+        val current = _automationSettings.value
+        if (current.stoppedByPolicyMobileSession) {
+            updateAutomationSettings(current.copy(stoppedByPolicyMobileSession = false))
+        }
+    }
+
+    fun clearStoppedByLeaveWifiSsid() {
+        val current = _automationSettings.value
+        if (current.stoppedByLeaveWifiSsid != null) {
+            updateAutomationSettings(current.copy(stoppedByLeaveWifiSsid = null))
+        }
     }
 
     private fun loadAutomationSettings(): AutomationSettings {
@@ -63,12 +103,12 @@ class PreferencesRepository(context: Context) {
 
         val wifiProfId = prefs.getLong(KEY_WIFI_PROFILE_ID, -1L)
         val mobileProfId = prefs.getLong(KEY_MOBILE_PROFILE_ID, -1L)
+        val defaultProfId = prefs.getLong(KEY_DEFAULT_PROFILE_ID, -1L)
 
         return AutomationSettings(
             isAutomationGloballyEnabled = prefs.getBoolean(KEY_AUTO_ENABLED, true),
             startOnLaunch = prefs.getBoolean(KEY_START_ON_LAUNCH, false),
             backgroundRunEnabled = prefs.getBoolean(KEY_BACKGROUND_RUN, true),
-            wifiSsidPermissionEnabled = prefs.getBoolean(KEY_WIFI_SSID_PERMISSION, true),
             autoStartOnWifi = prefs.getBoolean(KEY_WIFI_AUTO_START, true),
             matchAnyWifiNetwork = prefs.getBoolean(KEY_WIFI_MATCH_ANY, true),
             specificSsid = prefs.getString(KEY_WIFI_SPECIFIC_SSID, "") ?: "",
@@ -83,8 +123,14 @@ class PreferencesRepository(context: Context) {
             autoStopOnMobileDataDisabled = prefs.getBoolean(KEY_MOBILE_AUTO_STOP, true),
             mobileProfileId = if (mobileProfId > 0) mobileProfId else null,
 
+            defaultProfileId = if (defaultProfId > 0) defaultProfId else null,
+
             manualOverrideSuppressed = prefs.getBoolean(KEY_MANUAL_OVERRIDE, false),
             manualOverrideReason = prefs.getString(KEY_MANUAL_OVERRIDE_REASON, "") ?: "",
+            manualOverrideNetworkKey = prefs.getString(KEY_MANUAL_OVERRIDE_NETWORK_KEY, null),
+
+            stoppedByPolicyMobileSession = prefs.getBoolean(KEY_STOPPED_BY_POLICY_MOBILE, false),
+            stoppedByLeaveWifiSsid = prefs.getString(KEY_STOPPED_BY_LEAVE_WIFI_SSID, null),
 
             isHotspotSharingEnabled = prefs.getBoolean(KEY_HOTSPOT_ENABLED, false),
             hotspotProxyPort = prefs.getInt(KEY_HOTSPOT_PORT, 10808),
@@ -109,7 +155,6 @@ class PreferencesRepository(context: Context) {
         private const val KEY_AUTO_ENABLED = "auto_globally_enabled"
         private const val KEY_START_ON_LAUNCH = "start_on_launch"
         private const val KEY_BACKGROUND_RUN = "background_run_enabled"
-        private const val KEY_WIFI_SSID_PERMISSION = "wifi_ssid_permission_enabled"
         private const val KEY_WIFI_AUTO_START = "wifi_auto_start"
         private const val KEY_WIFI_MATCH_ANY = "wifi_match_any"
         private const val KEY_WIFI_SPECIFIC_SSID = "wifi_specific_ssid"
@@ -124,8 +169,14 @@ class PreferencesRepository(context: Context) {
         private const val KEY_MOBILE_AUTO_STOP = "mobile_auto_stop"
         private const val KEY_MOBILE_PROFILE_ID = "mobile_profile_id"
 
+        private const val KEY_DEFAULT_PROFILE_ID = "default_profile_id"
+
         private const val KEY_MANUAL_OVERRIDE = "manual_override_suppressed"
         private const val KEY_MANUAL_OVERRIDE_REASON = "manual_override_reason"
+        private const val KEY_MANUAL_OVERRIDE_NETWORK_KEY = "manual_override_network_key"
+
+        private const val KEY_STOPPED_BY_POLICY_MOBILE = "stopped_by_policy_mobile_session"
+        private const val KEY_STOPPED_BY_LEAVE_WIFI_SSID = "stopped_by_leave_wifi_ssid"
 
         private const val KEY_HOTSPOT_ENABLED = "hotspot_sharing_enabled"
         private const val KEY_HOTSPOT_PORT = "hotspot_proxy_port"

@@ -126,19 +126,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVpn(profileId: Long? = null) {
         viewModelScope.launch {
-            // Clear manual override and unpause automation when user explicitly starts VPN
-            prefsRepo.setManualOverride(false)
-            automationManager.onUserExplicitConnect()
+            // Clear manual override when user explicitly starts VPN
+            prefsRepo.clearManualOverride()
             val id = profileId ?: activeProfile.value?.id
+            // Perform ping test when user presses Start service
+            val target = if (id != null) allProfiles.value.find { it.id == id } ?: activeProfile.value else activeProfile.value
+            if (target != null) {
+                testProfileLatency(target)
+            }
             V2RayVpnService.start(getApplication(), id, isAutomated = false)
         }
     }
 
     fun stopVpn(reason: String = "User pressed stop in app") {
         viewModelScope.launch {
-            // Pause automation until network actually switches
-            prefsRepo.setManualOverride(true, "Stopped manually in UI")
-            automationManager.onUserExplicitDisconnect()
+            // Pause automation on this network until network actually switches
+            val netKey = automationManager.getCurrentNetworkKey()
+            prefsRepo.setManualOverride(reason, netKey)
+            prefsRepo.clearStoppedByPolicy()
             V2RayVpnService.stop(getApplication(), reason, isAutomated = false)
         }
     }
@@ -197,10 +202,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var isTestingSingleProfile = false
+
     fun testProfileLatency(profile: ServerProfile) {
+        if (isTestingSingleProfile) return
         viewModelScope.launch(Dispatchers.IO) {
-            val latency = PingTester.testLatency(profile)
-            profileDao.updateLatency(profile.id, latency, System.currentTimeMillis())
+            isTestingSingleProfile = true
+            try {
+                val latency = PingTester.testLatency(profile)
+                profileDao.updateLatency(profile.id, latency, System.currentTimeMillis())
+            } finally {
+                isTestingSingleProfile = false
+            }
         }
     }
 
@@ -223,7 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearManualOverride() {
-        prefsRepo.setManualOverride(false)
+        prefsRepo.clearManualOverride()
         showMessage("Manual override cleared. Automation resumed.")
         viewModelScope.launch {
             automationManager.evaluateNetworkState()

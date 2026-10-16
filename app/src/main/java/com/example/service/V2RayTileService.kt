@@ -10,7 +10,6 @@ import androidx.annotation.RequiresApi
 import com.example.MainActivity
 import com.example.R
 import com.example.V2RayApplication
-import com.example.core.V2RayCoreManager
 import com.example.model.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +26,7 @@ class V2RayTileService : TileService() {
         super.onStartListening()
         stateJob?.cancel()
         stateJob = scope.launch {
-            V2RayCoreManager.currentConnectionState.collect { state ->
+            V2RayVpnService.serviceState.collect { state ->
                 updateTileState(state)
             }
         }
@@ -41,13 +40,15 @@ class V2RayTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val currentState = V2RayCoreManager.currentConnectionState.value
+        val currentState = V2RayVpnService.serviceState.value
         val app = V2RayApplication.get()
         if (currentState.isRunning) {
-            app.automationManager.onUserExplicitDisconnect()
+            val netKey = app.automationManager.getCurrentNetworkKey()
+            app.preferencesRepository.setManualOverride("Quick Settings Tile", netKey)
+            app.preferencesRepository.clearStoppedByPolicy()
             V2RayVpnService.stop(this, "Quick Settings Tile", isAutomated = false)
         } else {
-            app.automationManager.onUserExplicitConnect()
+            app.preferencesRepository.clearManualOverride()
             val prepareIntent = VpnService.prepare(this)
             if (prepareIntent != null) {
                 val appIntent = Intent(this, MainActivity::class.java).apply {
@@ -66,29 +67,34 @@ class V2RayTileService : TileService() {
         when (state) {
             is ConnectionState.Connected -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.label = "v2rayDP"
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = state.profile.name
-                }
+                tile.label = "v2rayDP: ON"
+                tile.subtitle = state.profile.name
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
             is ConnectionState.Connecting -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.label = "Connecting…"
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = state.profileName
-                }
+                tile.label = "v2rayDP"
+                tile.subtitle = "Connecting…"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
-            is ConnectionState.Disconnected, is ConnectionState.Error -> {
+            is ConnectionState.Error -> {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "v2rayDP"
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    tile.subtitle = "Disconnected"
-                }
+                tile.subtitle = "Error"
+                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
+            }
+            is ConnectionState.Disconnected -> {
+                tile.state = Tile.STATE_INACTIVE
+                tile.label = "v2rayDP: OFF"
+                tile.subtitle = "Tap to connect"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
         }
         tile.updateTile()
+    }
+
+    override fun onDestroy() {
+        stateJob?.cancel()
+        super.onDestroy()
     }
 }

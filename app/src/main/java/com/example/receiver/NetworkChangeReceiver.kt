@@ -7,6 +7,7 @@ import com.example.V2RayApplication
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 class NetworkChangeReceiver : BroadcastReceiver() {
 
@@ -16,16 +17,18 @@ class NetworkChangeReceiver : BroadcastReceiver() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val app = V2RayApplication.get()
-                when (action) {
-                    Intent.ACTION_BOOT_COMPLETED -> {
-                        app.automationManager.onBootCompleted()
-                    }
-                    ACTION_CONNECTIVITY_CALLBACK -> {
-                        app.automationManager.notifyNetworkEvent("system_pending_intent_callback")
-                    }
-                    else -> {
-                        app.automationManager.notifyNetworkEvent("receiver_$action")
+                withTimeout(8000L) {
+                    val app = V2RayApplication.get()
+                    when (action) {
+                        Intent.ACTION_BOOT_COMPLETED -> {
+                            app.automationManager.onBootCompleted()
+                        }
+                        ACTION_CONNECTIVITY_CALLBACK -> {
+                            app.automationManager.evaluateNow("system_pending_intent_callback")
+                        }
+                        else -> {
+                            app.automationManager.evaluateNow("receiver_$action")
+                        }
                     }
                 }
             } catch (_: Exception) {

@@ -39,7 +39,6 @@ class V2RayCoreManager(
 
     private fun updateState(newState: ConnectionState) {
         _connectionState.value = newState
-        _currentConnectionState.value = newState
     }
 
     @Synchronized
@@ -147,11 +146,11 @@ class V2RayCoreManager(
     }
 
     companion object {
-        private val _currentConnectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
-        val currentConnectionState: StateFlow<ConnectionState> = _currentConnectionState.asStateFlow()
+        val currentConnectionState: StateFlow<ConnectionState>
+            get() = com.example.service.V2RayVpnService.serviceState
 
         fun setGlobalConnectionState(state: ConnectionState) {
-            _currentConnectionState.value = state
+            // Handled authoritatively by V2RayVpnService
         }
     }
 }

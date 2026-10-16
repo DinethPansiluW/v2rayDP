@@ -1,10 +1,12 @@
 package com.example
 
+import android.app.Activity
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.os.Bundle
 import com.example.automation.VpnAutomationManager
 import com.example.data.AppDatabase
 import com.example.data.PreferencesRepository
@@ -20,6 +22,8 @@ class V2RayApplication : Application() {
     lateinit var automationManager: VpnAutomationManager
         private set
 
+    private var startedActivities = 0
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -30,6 +34,30 @@ class V2RayApplication : Application() {
 
         createNotificationChannels()
         automationManager.initialize()
+
+        // Track foreground/background state to enable in-process callback only while UI is visible (Item 8)
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                if (startedActivities == 0) {
+                    automationManager.onAppForegrounded()
+                }
+                startedActivities++
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedActivities--
+                if (startedActivities <= 0) {
+                    startedActivities = 0
+                    automationManager.onAppBackgrounded()
+                }
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
     }
 
     private fun createNotificationChannels() {

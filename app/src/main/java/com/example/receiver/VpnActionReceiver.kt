@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.example.V2RayApplication
-import com.example.core.V2RayCoreManager
 import com.example.model.AppLog
 import com.example.service.V2RayVpnService
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +20,7 @@ class VpnActionReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val app = V2RayApplication.get()
-                val currentState = V2RayCoreManager.currentConnectionState.value
+                val currentState = V2RayVpnService.serviceState.value
 
                 when (action) {
                     ACTION_START_VPN -> {
@@ -33,7 +32,7 @@ class VpnActionReceiver : BroadcastReceiver() {
                                 triggerReason = "Samsung Modes & Routines / Shortcut"
                             )
                         )
-                        app.automationManager.onUserExplicitConnect()
+                        app.preferencesRepository.clearManualOverride()
                         V2RayVpnService.start(context, if (profileId > 0) profileId else null, isAutomated = false)
                     }
                     ACTION_STOP_VPN -> {
@@ -45,15 +44,19 @@ class VpnActionReceiver : BroadcastReceiver() {
                                 triggerReason = "Samsung Modes & Routines / Shortcut"
                             )
                         )
-                        app.automationManager.onUserExplicitDisconnect()
+                        val netKey = app.automationManager.getCurrentNetworkKey()
+                        app.preferencesRepository.setManualOverride("Samsung Modes & Routines", netKey)
+                        app.preferencesRepository.clearStoppedByPolicy()
                         V2RayVpnService.stop(context, "Samsung Modes & Routines / Shortcut", isAutomated = false)
                     }
                     ACTION_TOGGLE_VPN -> {
                         if (currentState.isRunning) {
-                            app.automationManager.onUserExplicitDisconnect()
+                            val netKey = app.automationManager.getCurrentNetworkKey()
+                            app.preferencesRepository.setManualOverride("Toggled from Routine", netKey)
+                            app.preferencesRepository.clearStoppedByPolicy()
                             V2RayVpnService.stop(context, "Toggled from Routine", isAutomated = false)
                         } else {
-                            app.automationManager.onUserExplicitConnect()
+                            app.preferencesRepository.clearManualOverride()
                             V2RayVpnService.start(context, if (profileId > 0) profileId else null, isAutomated = false)
                         }
                     }

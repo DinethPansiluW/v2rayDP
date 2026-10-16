@@ -238,7 +238,12 @@ fun HomeScreen(
             }
 
             if (activeProfile != null) {
-                LatencyBadge(latencyMs = activeProfile!!.pingLatencyMs)
+                LatencyBadge(
+                    latencyMs = activeProfile!!.pingLatencyMs,
+                    modifier = Modifier.clickable {
+                        viewModel.testProfileLatency(activeProfile!!)
+                    }
+                )
             }
         }
 
@@ -313,14 +318,7 @@ fun HomeScreen(
                         color = TextSecondary
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        LatencyBadge(latencyMs = p.pingLatencyMs)
-                    }
                 } else {
                     Text("No server profile selected", color = TextSecondary)
                     Spacer(modifier = Modifier.height(8.dp))

@@ -567,6 +567,7 @@ fun AutomationScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("When leaving Wi-Fi:", fontWeight = FontWeight.SemiBold, color = TextPrimary)
                             Text(settings.wifiLeavePolicy.displayName, fontSize = 12.sp, color = AccentCyan)
+                            Text(settings.wifiLeavePolicy.description, fontSize = 11.sp, color = TextSecondary)
                         }
                         Box {
                             OutlinedButton(onClick = { showPolicyMenu = true }) {
@@ -579,7 +580,12 @@ fun AutomationScreen(
                             ) {
                                 WifiLeavePolicy.values().forEach { policy ->
                                     DropdownMenuItem(
-                                        text = { Text(policy.displayName, color = TextPrimary) },
+                                        text = {
+                                            Column {
+                                                Text(policy.displayName, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                                Text(policy.description, color = TextSecondary, fontSize = 11.sp)
+                                            }
+                                        },
                                         onClick = {
                                             viewModel.updateAutomationSettings(settings.copy(wifiLeavePolicy = policy))
                                             showPolicyMenu = false
