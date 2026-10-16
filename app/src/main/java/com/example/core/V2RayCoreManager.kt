@@ -37,6 +37,11 @@ class V2RayCoreManager(
     private var activeProfile: ServerProfile? = null
     private var connectionStartTime: Long = 0
 
+    private fun updateState(newState: ConnectionState) {
+        _connectionState.value = newState
+        _currentConnectionState.value = newState
+    }
+
     @Synchronized
     fun startCore(
         profile: ServerProfile,
@@ -50,7 +55,7 @@ class V2RayCoreManager(
             stopCore("Restarting with new profile")
         }
 
-        _connectionState.value = ConnectionState.Connecting(profile.name, "Initializing VMess protocol engine…")
+        updateState(ConnectionState.Connecting(profile.name, "Initializing VMess protocol engine…"))
         activeProfile = profile
         connectionStartTime = System.currentTimeMillis()
 
@@ -62,28 +67,28 @@ class V2RayCoreManager(
             vmessEngine = engine
 
             // 2. Start Local SOCKS5 / HTTP Proxy Server (bound to 0.0.0.0 for localhost + hotspot clients)
-            _connectionState.value = ConnectionState.Connecting(profile.name, "Starting local proxy servers…")
+            updateState(ConnectionState.Connecting(profile.name, "Starting local proxy servers…"))
             val proxyServer = LocalProxyServer(engine, socksPort, httpPort)
             proxyServer.start()
             localProxyServer = proxyServer
 
             // 3. Establish VPN Tunnel (TUN interface)
-            _connectionState.value = ConnectionState.Connecting(profile.name, "Configuring Android VPN tunnel…")
+            updateState(ConnectionState.Connecting(profile.name, "Configuring Android VPN tunnel…"))
             val tunnel = VpnTunnelManager(vpnService)
-            val success = tunnel.establishTunnel(profile, primaryDns, secondaryDns, bypassLan)
+            val success = tunnel.establishTunnel(profile, socksPort, primaryDns, secondaryDns, bypassLan)
             if (!success) {
                 stopCore("Failed to establish TUN interface")
-                _connectionState.value = ConnectionState.Error("VPN permission required or TUN creation failed")
+                updateState(ConnectionState.Error("VPN permission required or TUN creation failed"))
                 return false
             }
             tunnelManager = tunnel
 
-            _connectionState.value = ConnectionState.Connected(profile, connectionStartTime, socksPort)
+            updateState(ConnectionState.Connected(profile, connectionStartTime, socksPort))
             startStatsMonitoring()
             return true
         } catch (e: Exception) {
             stopCore("Initialization error: ${e.message}")
-            _connectionState.value = ConnectionState.Error(e.message ?: "Unknown core error")
+            updateState(ConnectionState.Error(e.message ?: "Unknown core error"))
             return false
         }
     }
@@ -138,6 +143,15 @@ class V2RayCoreManager(
         activeProfile = null
 
         _trafficStats.value = TrafficStats()
-        _connectionState.value = ConnectionState.Disconnected(reason)
+        updateState(ConnectionState.Disconnected(reason))
+    }
+
+    companion object {
+        private val _currentConnectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
+        val currentConnectionState: StateFlow<ConnectionState> = _currentConnectionState.asStateFlow()
+
+        fun setGlobalConnectionState(state: ConnectionState) {
+            _currentConnectionState.value = state
+        }
     }
 }

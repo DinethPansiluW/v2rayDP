@@ -30,6 +30,9 @@ data class AutomationSettings(
     val autoStopOnMobileDataDisabled: Boolean = true, // When Mobile Data is switched OFF or lost, auto-stop VPN immediately
     val mobileProfileId: Long? = null,
 
+    // Default Profile Resolution
+    val defaultProfileId: Long? = null,
+
     // Manual override suppression
     val manualOverrideSuppressed: Boolean = false,
     val manualOverrideReason: String = "",

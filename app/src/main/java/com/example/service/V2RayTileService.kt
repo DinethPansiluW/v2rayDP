@@ -10,6 +10,7 @@ import androidx.annotation.RequiresApi
 import com.example.MainActivity
 import com.example.R
 import com.example.V2RayApplication
+import com.example.core.V2RayCoreManager
 import com.example.model.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +27,7 @@ class V2RayTileService : TileService() {
         super.onStartListening()
         stateJob?.cancel()
         stateJob = scope.launch {
-            V2RayVpnService.serviceState.collect { state ->
+            V2RayCoreManager.currentConnectionState.collect { state ->
                 updateTileState(state)
             }
         }
@@ -40,21 +41,22 @@ class V2RayTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val currentState = V2RayVpnService.serviceState.value
+        val currentState = V2RayCoreManager.currentConnectionState.value
+        val app = V2RayApplication.get()
         if (currentState.isRunning) {
-            V2RayVpnService.stop(this, "Quick Settings Tile")
+            app.automationManager.onUserExplicitDisconnect()
+            V2RayVpnService.stop(this, "Quick Settings Tile", isAutomated = false)
         } else {
-            // Check if VPN consent is already prepared
+            app.automationManager.onUserExplicitConnect()
             val prepareIntent = VpnService.prepare(this)
             if (prepareIntent != null) {
-                // Requires user consent in UI
                 val appIntent = Intent(this, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     putExtra("action_trigger_vpn", true)
                 }
                 startActivityAndCollapse(appIntent)
             } else {
-                V2RayVpnService.start(this)
+                V2RayVpnService.start(this, isAutomated = false)
             }
         }
     }

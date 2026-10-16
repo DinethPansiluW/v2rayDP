@@ -106,6 +106,7 @@ dependencies {
   implementation(libs.zxing.core)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
+  implementation(files("libs/hev-socks5-tunnel.aar"))
   // implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)

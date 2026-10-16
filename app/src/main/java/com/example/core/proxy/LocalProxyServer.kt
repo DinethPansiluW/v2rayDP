@@ -18,6 +18,7 @@ class LocalProxyServer(
     val httpPort: Int = 10809
 ) {
     private val isRunning = AtomicBoolean(false)
+    private val firstConnectLogged = AtomicBoolean(false)
     private var socksServerSocket: ServerSocket? = null
     private var httpServerSocket: ServerSocket? = null
     private var threadPool: ExecutorService? = null
@@ -133,6 +134,13 @@ class LocalProxyServer(
             if (portHigh < 0 || portLow < 0) return
             val destPort = (portHigh shl 8) or portLow
 
+            val isFirst = firstConnectLogged.compareAndSet(false, true)
+            if (isFirst) {
+                Log.d(TAG, "FIRST SOCKS5 CONNECT request seen: $destHost:$destPort")
+            } else {
+                Log.d(TAG, "SOCKS5 CONNECT request: $destHost:$destPort")
+            }
+
             // Open remote VLESS / VMess connection
             val tunnel = vmessEngine.openRemoteConnection(destHost, destPort)
 
@@ -177,31 +185,6 @@ class LocalProxyServer(
 
             val lines = rawHeader.split("\r\n")
             val initialLine = lines.firstOrNull() ?: return
-
-            // Check for Android NetworkMonitor captive portal / connectivity validation probes
-            val isCaptiveCheck = initialLine.contains("generate_204", ignoreCase = true) ||
-                    initialLine.contains("gen_204", ignoreCase = true) ||
-                    rawHeader.contains("connectivitycheck.gstatic.com", ignoreCase = true) ||
-                    rawHeader.contains("connectivitycheck.android.com", ignoreCase = true) ||
-                    rawHeader.contains("clients3.google.com", ignoreCase = true) ||
-                    rawHeader.contains("detectportal.firefox.com", ignoreCase = true) ||
-                    rawHeader.contains("captive.apple.com", ignoreCase = true) ||
-                    rawHeader.contains("msftconnecttest.com", ignoreCase = true)
-
-            if (isCaptiveCheck) {
-                if (rawHeader.contains("captive.apple.com", ignoreCase = true)) {
-                    val body = "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
-                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
-                    outStream.write(resp.toByteArray(StandardCharsets.UTF_8))
-                    outStream.flush()
-                } else {
-                    // Immediately return standard HTTP 204 No Content so Android marks Wi-Fi and VPN as validated
-                    val resp = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    outStream.write(resp.toByteArray(StandardCharsets.UTF_8))
-                    outStream.flush()
-                }
-                return
-            }
 
             if (initialLine.startsWith("CONNECT ", ignoreCase = true)) {
                 // CONNECT host:port HTTP/1.1

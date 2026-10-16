@@ -46,7 +46,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
 
     // VPN Service State & Traffic
-    val connectionState: StateFlow<ConnectionState> = V2RayVpnService.serviceState
+    val connectionState: StateFlow<ConnectionState> = com.example.core.V2RayCoreManager.currentConnectionState
     val trafficStats: StateFlow<TrafficStats> = V2RayVpnService.serviceTrafficStats
 
     // Automation Settings
@@ -126,18 +126,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVpn(profileId: Long? = null) {
         viewModelScope.launch {
-            // Clear manual override when user explicitly starts VPN
+            // Clear manual override and unpause automation when user explicitly starts VPN
             prefsRepo.setManualOverride(false)
+            automationManager.onUserExplicitConnect()
             val id = profileId ?: activeProfile.value?.id
-            V2RayVpnService.start(getApplication(), id)
+            V2RayVpnService.start(getApplication(), id, isAutomated = false)
         }
     }
 
     fun stopVpn(reason: String = "User pressed stop in app") {
         viewModelScope.launch {
-            // Set manual override to prevent immediate automation loop
+            // Pause automation until network actually switches
             prefsRepo.setManualOverride(true, "Stopped manually in UI")
-            V2RayVpnService.stop(getApplication(), reason)
+            automationManager.onUserExplicitDisconnect()
+            V2RayVpnService.stop(getApplication(), reason, isAutomated = false)
         }
     }
 
@@ -146,7 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             profileDao.setSelected(profile.id)
             if (connectionState.value.isRunning) {
                 // Restart service with the newly selected profile
-                V2RayVpnService.start(getApplication(), profile.id)
+                V2RayVpnService.start(getApplication(), profile.id, isAutomated = false)
             }
         }
     }

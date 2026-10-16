@@ -58,26 +58,16 @@ class V2RayVpnService : VpnService() {
                 hasStartedConnecting = true
                 val profileId = intent?.getLongExtra(EXTRA_PROFILE_ID, -1L) ?: -1L
                 serviceScope.launch(Dispatchers.IO) {
-                    val app = V2RayApplication.get()
-                    val profile = if (profileId > 0) {
-                        app.database.serverProfileDao().getProfileById(profileId)
-                    } else {
-                        app.database.serverProfileDao().getActiveProfile()
-                    }
+                    val profile = resolveProfile(if (profileId > 0) profileId else null)
 
                     if (profile != null) {
                         startVpnWithProfile(profile)
                     } else {
-                        val all = app.database.serverProfileDao().getAllProfiles()
-                        if (all.isNotEmpty()) {
-                            val first = all.first()
-                            app.database.serverProfileDao().setSelected(first.id)
-                            startVpnWithProfile(first)
-                        } else {
-                            _serviceState.value = ConnectionState.Error("No server profiles available")
-                            logEvent("ERROR", "No server profiles found to connect")
-                            stopVpn("No profiles found")
-                        }
+                        val errorMsg = "No profiles configured"
+                        _serviceState.value = ConnectionState.Error(errorMsg)
+                        V2RayCoreManager.setGlobalConnectionState(ConnectionState.Error(errorMsg))
+                        logEvent("ERROR", errorMsg)
+                        stopVpn(errorMsg)
                     }
                 }
             }
@@ -131,6 +121,51 @@ class V2RayVpnService : VpnService() {
         }
     }
 
+    private var defaultNetworkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    private fun registerUnderlyingNetworkListener() {
+        if (defaultNetworkCallback != null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                        try {
+                            setUnderlyingNetworks(arrayOf(network))
+                            android.util.Log.d(TAG, "Re-set underlying network: $network")
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                        try {
+                            val active = cm.activeNetwork
+                            setUnderlyingNetworks(if (active != null) arrayOf(active) else null)
+                            android.util.Log.d(TAG, "Underlying network changed/lost; new active: $active")
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            defaultNetworkCallback = callback
+            try {
+                cm.registerDefaultNetworkCallback(callback)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "registerDefaultNetworkCallback error: ${e.message}")
+            }
+        }
+    }
+
+    private fun unregisterUnderlyingNetworkListener() {
+        defaultNetworkCallback?.let {
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                cm?.unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+            defaultNetworkCallback = null
+        }
+    }
+
     private fun observeCoreState() {
         val manager = coreManager ?: return
 
@@ -140,7 +175,8 @@ class V2RayVpnService : VpnService() {
                 when (state) {
                     is ConnectionState.Connected -> {
                         hasStartedConnecting = true
-                        // Link VPN to system underlying default network (Wi-Fi/Cellular) to eliminate "no internet" ! warning
+                        registerUnderlyingNetworkListener()
+                        // Link VPN to system underlying default network (Wi-Fi/Cellular)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                             try {
                                 val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
@@ -162,6 +198,7 @@ class V2RayVpnService : VpnService() {
                         updateNotification("Connecting to ${state.profileName}", state.step)
                     }
                     is ConnectionState.Disconnected -> {
+                        unregisterUnderlyingNetworkListener()
                         // Only stop service if it had actually started connecting
                         if (hasStartedConnecting) {
                             try {
@@ -237,6 +274,7 @@ class V2RayVpnService : VpnService() {
 
     fun stopVpn(reason: String = "User requested stop") {
         logEvent("INFO", "Stopping VPN: $reason")
+        unregisterUnderlyingNetworkListener()
         _serviceState.value = ConnectionState.Disconnected(reason)
         coreManager?.stopCore(reason)
         try {
@@ -260,6 +298,7 @@ class V2RayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        unregisterUnderlyingNetworkListener()
         stateObserverJob?.cancel()
         statsObserverJob?.cancel()
         coreManager?.stopCore("Service destroyed")
@@ -275,10 +314,12 @@ class V2RayVpnService : VpnService() {
     }
 
     companion object {
+        private const val TAG = "V2RayVpnService"
         const val ACTION_START = "com.example.v2raydp.START"
         const val ACTION_STOP = "com.example.v2raydp.STOP"
         const val EXTRA_PROFILE_ID = "extra_profile_id"
         const val EXTRA_REASON = "extra_reason"
+        const val EXTRA_IS_AUTOMATED = "extra_is_automated"
         private const val NOTIFICATION_ID = 1001
 
         private val _serviceState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected())
@@ -290,11 +331,54 @@ class V2RayVpnService : VpnService() {
         var instance: V2RayVpnService? = null
             private set
 
-        fun start(context: Context, profileId: Long? = null) {
+        suspend fun resolveProfile(targetProfileId: Long?): ServerProfile? {
+            val app = V2RayApplication.get()
+            val dao = app.database.serverProfileDao()
+            val settings = app.preferencesRepository.getAutomationSettings()
+
+            // 1. Explicit target ID if specified and valid
+            if (targetProfileId != null && targetProfileId > 0L) {
+                val target = dao.getProfileById(targetProfileId)
+                if (target != null) return target
+            }
+
+            // 2. defaultProfileId from settings (if valid and exists)
+            val defaultId = settings.defaultProfileId
+            if (defaultId != null && defaultId > 0L) {
+                val def = dao.getProfileById(defaultId)
+                if (def != null) return def
+            }
+
+            // 3. Current active/selected profile in Room
+            val active = dao.getActiveProfile()
+            if (active != null) return active
+
+            // 4. First profile in profile list
+            val all = dao.getAllProfiles()
+            if (all.isNotEmpty()) {
+                val first = all.first()
+                dao.setSelected(first.id)
+                return first
+            }
+
+            // 5. Empty
+            return null
+        }
+
+        fun start(context: Context, profileId: Long? = null, isAutomated: Boolean = false) {
+            val currentState = V2RayCoreManager.currentConnectionState.value
+            if (currentState is ConnectionState.Connected || currentState is ConnectionState.Connecting) {
+                android.util.Log.d(TAG, "VPN is already running or connecting. Ignoring start call.")
+                return
+            }
+
             _serviceState.value = ConnectionState.Connecting("v2rayDP", "Connecting…")
+            V2RayCoreManager.setGlobalConnectionState(_serviceState.value)
+
             val intent = Intent(context, V2RayVpnService::class.java).apply {
                 action = ACTION_START
-                if (profileId != null) {
+                putExtra(EXTRA_IS_AUTOMATED, isAutomated)
+                if (profileId != null && profileId > 0L) {
                     putExtra(EXTRA_PROFILE_ID, profileId)
                 }
             }
@@ -305,13 +389,21 @@ class V2RayVpnService : VpnService() {
             }
         }
 
-        fun stop(context: Context, reason: String = "User requested disconnect") {
+        fun stop(context: Context, reason: String = "User requested disconnect", isAutomated: Boolean = false) {
+            val currentState = V2RayCoreManager.currentConnectionState.value
+            if (currentState is ConnectionState.Disconnected || currentState is ConnectionState.Error) {
+                android.util.Log.d(TAG, "VPN is already disconnected or in error. Ignoring stop call.")
+                return
+            }
+
             _serviceState.value = ConnectionState.Disconnected(reason)
+            V2RayCoreManager.setGlobalConnectionState(_serviceState.value)
+
             val intent = Intent(context, V2RayVpnService::class.java).apply {
                 action = ACTION_STOP
                 putExtra(EXTRA_REASON, reason)
+                putExtra(EXTRA_IS_AUTOMATED, isAutomated)
             }
-            // Use startService (or stopSelf on active instance)
             if (instance != null) {
                 instance?.stopVpn(reason)
             } else {

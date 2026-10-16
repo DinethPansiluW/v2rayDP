@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-sdk tools:overrideLibrary="hev.socks5.tunnel" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -78,10 +80,10 @@
             </intent-filter>
         </service>
 
-        <!-- Receiver for Samsung Modes & Routines and system intents -->
+        <!-- Receiver for Samsung Modes & Routines and system intents (internal safe export=false) -->
         <receiver
             android:name=".receiver.VpnActionReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="com.example.v2raydp.ACTION_START_VPN" />
                 <action android:name="com.example.v2raydp.ACTION_STOP_VPN" />
@@ -90,17 +92,24 @@
             </intent-filter>
         </receiver>
 
-        <!-- Network Change & Boot Receiver for Automation -->
+        <!-- Boot Receiver for Automation (Keep ONLY BOOT_COMPLETED per Android 8.0+ background limits) -->
         <receiver
             android:name=".receiver.NetworkChangeReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
-                <action android:name="android.net.wifi.WIFI_STATE_CHANGED" />
-                <action android:name="android.net.wifi.STATE_CHANGE" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Automation Monitor Service for API 24-25 foreground network monitoring -->
+        <service
+            android:name=".automation.AutomationMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Automation network monitor for background Wi-Fi and mobile data management" />
+        </service>
 
     </application>
 
