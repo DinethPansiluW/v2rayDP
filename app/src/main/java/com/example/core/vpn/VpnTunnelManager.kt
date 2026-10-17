@@ -52,6 +52,9 @@ class VpnTunnelManager(
         secondaryDns: String = "8.8.8.8",
         bypassLan: Boolean = true
     ): Boolean {
+        // Stop any previous tunnel / native service to avoid collisions or native conflicts
+        stopTunnel()
+
         try {
             val builder = vpnService.Builder().apply {
                 setSession("v2rayDP: ${profile.name}")
@@ -189,12 +192,14 @@ class VpnTunnelManager(
     }
 
     fun stopTunnel() {
-        if (!isRunning.getAndSet(false) && vpnInterface == null) return
+        isRunning.set(false)
         Log.d(TAG, "Stopping tun2socks tunnel and closing TUN interface")
 
         // Stop hev-socks5-tunnel first before closing the file descriptor
         try {
-            hev.htproxy.TProxyService.TProxyStopService()
+            if (hev.htproxy.TProxyService.TProxyIsRunning()) {
+                hev.htproxy.TProxyService.TProxyStopService()
+            }
         } catch (e: Throwable) {
             Log.w(TAG, "TProxyStopService error: ${e.message}")
         }

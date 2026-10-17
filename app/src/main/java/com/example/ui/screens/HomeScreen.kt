@@ -230,11 +230,9 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            when (val state = connectionState) {
-                is ConnectionState.Connected -> StatusBadge("Connected to ${state.profile.name}", StatusConnected)
-                is ConnectionState.Connecting -> StatusBadge(state.step, StatusConnecting)
-                is ConnectionState.Error -> StatusBadge("Error: ${state.message}", StatusError)
-                is ConnectionState.Disconnected -> StatusBadge("Disconnected", StatusDisconnected)
+            when (connectionState) {
+                is ConnectionState.Connected -> StatusBadge("Connected", StatusConnected)
+                else -> StatusBadge("Disconnected", StatusDisconnected)
             }
 
             if (activeProfile != null) {
@@ -332,21 +330,12 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Unified 1-Button Start / Stop Service Control
-        val isConnecting = connectionState is ConnectionState.Connecting
-        val buttonBgColor = when {
-            isRunning -> StatusError
-            isConnecting -> StatusConnecting
-            else -> StatusConnected
-        }
-        val buttonText = when {
-            isRunning -> "Stop Service"
-            isConnecting -> "Connecting…"
-            else -> "Start Service"
-        }
+        val buttonBgColor = if (isRunning) StatusError else StatusConnected
+        val buttonText = if (isRunning) "Stop Service" else "Start Service"
 
         Button(
             onClick = {
-                if (isRunning || isConnecting) {
+                if (isRunning) {
                     viewModel.stopVpn("User tapped stop service")
                 } else {
                     onPrepareVpn()
@@ -362,19 +351,11 @@ fun HomeScreen(
                 contentColor = Color.White
             )
         ) {
-            if (isConnecting) {
-                androidx.compose.material3.CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = Color.White,
-                    strokeWidth = 2.5.dp
-                )
-            } else {
-                Icon(
-                    imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
+            Icon(
+                imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp)
+            )
             Spacer(modifier = Modifier.width(10.dp))
             Text(
                 text = buttonText,

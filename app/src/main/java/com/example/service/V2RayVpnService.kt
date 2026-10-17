@@ -396,8 +396,8 @@ class V2RayVpnService : VpnService() {
 
         fun start(context: Context, profileId: Long? = null, isAutomated: Boolean = false) {
             val currentState = serviceState.value
-            if (currentState is ConnectionState.Connected || currentState is ConnectionState.Connecting) {
-                android.util.Log.d(TAG, "VPN is already running or connecting. Ignoring start call.")
+            if (currentState is ConnectionState.Connected) {
+                android.util.Log.d(TAG, "VPN is already connected. Ignoring start call.")
                 return
             }
 

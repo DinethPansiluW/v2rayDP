@@ -448,9 +448,7 @@ fun AutomationScreen(
                                         val clean = viewModel.automationManager.cleanSsidString(newSsidInput) ?: newSsidInput.trim()
                                         if (clean.isNotEmpty()) {
                                             viewModel.addTargetSsid(clean)
-                                            viewModel.updateAutomationSettings(settings.copy(specificSsid = clean, matchAnyWifiNetwork = false))
                                             newSsidInput = ""
-                                            viewModel.automationManager.forceEvaluateNow()
                                         }
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = androidx.compose.ui.graphics.Color.Black),
@@ -466,8 +464,6 @@ fun AutomationScreen(
                                 TextButton(
                                     onClick = {
                                         viewModel.addTargetSsid(cleanCurrent)
-                                        viewModel.updateAutomationSettings(settings.copy(specificSsid = cleanCurrent, matchAnyWifiNetwork = false))
-                                        viewModel.automationManager.forceEvaluateNow()
                                     }
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))

@@ -5,6 +5,7 @@ import com.example.core.vmess.VmessProtocolEngine
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
@@ -32,7 +33,10 @@ class LocalProxyServer(
         threadPool?.submit {
             try {
                 // Bind to 0.0.0.0 to enable both localhost and Wi-Fi hotspot client access
-                socksServerSocket = ServerSocket(socksPort, 50, InetAddress.getByName("0.0.0.0"))
+                socksServerSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), socksPort), 50)
+                }
                 Log.d(TAG, "Local SOCKS5 proxy listening on 0.0.0.0:$socksPort")
                 while (isRunning.get()) {
                     val clientSocket = socksServerSocket?.accept() ?: break
@@ -48,7 +52,10 @@ class LocalProxyServer(
         // HTTP Proxy Server
         threadPool?.submit {
             try {
-                httpServerSocket = ServerSocket(httpPort, 50, InetAddress.getByName("0.0.0.0"))
+                httpServerSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(InetAddress.getByName("0.0.0.0"), httpPort), 50)
+                }
                 Log.d(TAG, "Local HTTP proxy listening on 0.0.0.0:$httpPort")
                 while (isRunning.get()) {
                     val clientSocket = httpServerSocket?.accept() ?: break

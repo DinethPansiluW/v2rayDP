@@ -244,12 +244,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun addTargetSsid(ssid: String) {
-        val clean = ssid.trim()
+        val clean = automationManager.cleanSsidString(ssid) ?: ssid.trim()
         if (clean.isNotEmpty()) {
             val current = automationSettings.value
-            val updated = current.copy(targetWifiSsids = current.targetWifiSsids + clean)
+            val updated = current.copy(
+                targetWifiSsids = current.targetWifiSsids + clean,
+                specificSsid = clean,
+                matchAnyWifiNetwork = false,
+                autoStartOnWifi = true
+            )
             updateAutomationSettings(updated)
+            prefsRepo.clearManualOverride()
             showMessage("Added Wi-Fi: $clean")
+            viewModelScope.launch {
+                automationManager.evaluateNetworkState()
+            }
         }
     }
 

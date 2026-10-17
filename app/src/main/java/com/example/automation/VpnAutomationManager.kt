@@ -52,7 +52,7 @@ class VpnAutomationManager(private val context: Context) {
 
     // Tracked map of Network -> NetworkCapabilities (Item 9: replaces deprecated allNetworks)
     private val networkCapabilitiesMap = ConcurrentHashMap<Network, NetworkCapabilities>()
-    private val networkSsidMap = ConcurrentHashMap<Network, String?>()
+    private val networkSsidMap = ConcurrentHashMap<Network, String>()
 
     // Conflated channel for in-process debounced events (Item 2)
     private val inProcessChannel = Channel<String>(Channel.CONFLATED)
@@ -79,6 +79,7 @@ class VpnAutomationManager(private val context: Context) {
     private var lastActionTimestamp = 0L
     private var autoRetryCount = 0
     private var lastRetryNetworkKey: String? = null
+    private var lastEvaluatedNetworkKey: String? = null
 
     private val networkRequest = NetworkRequest.Builder()
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -158,7 +159,12 @@ class VpnAutomationManager(private val context: Context) {
                         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
                             val transportInfo = caps.transportInfo
                             if (transportInfo is WifiInfo) {
-                                networkSsidMap[network] = cleanSsidString(transportInfo.ssid)
+                                val clean = cleanSsidString(transportInfo.ssid)
+                                if (clean != null) {
+                                    networkSsidMap[network] = clean
+                                } else {
+                                    networkSsidMap.remove(network)
+                                }
                             }
                         }
                         notifyNetworkEvent("cb_onCapabilitiesChanged")
@@ -181,7 +187,12 @@ class VpnAutomationManager(private val context: Context) {
                         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             val transportInfo = caps.transportInfo
                             if (transportInfo is WifiInfo) {
-                                networkSsidMap[network] = cleanSsidString(transportInfo.ssid)
+                                val clean = cleanSsidString(transportInfo.ssid)
+                                if (clean != null) {
+                                    networkSsidMap[network] = clean
+                                } else {
+                                    networkSsidMap.remove(network)
+                                }
                             }
                         }
                         notifyNetworkEvent("cb_onCapabilitiesChanged")
@@ -314,19 +325,23 @@ class VpnAutomationManager(private val context: Context) {
         for ((net, caps) in networkCapabilitiesMap) {
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
 
-            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
 
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                if (hasInternet && isValidated) {
-                    wifiNet = net
-                    wifiCaps = caps
+                if (hasInternet) {
+                    if (wifiCaps == null || (!wifiCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))) {
+                        wifiNet = net
+                        wifiCaps = caps
+                    }
                 }
             }
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-                if (hasInternet && isValidated) {
-                    cellNet = net
-                    cellCaps = caps
+                if (hasInternet) {
+                    if (cellCaps == null || (!cellCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))) {
+                        cellNet = net
+                        cellCaps = caps
+                    }
                 }
             }
         }
@@ -337,9 +352,9 @@ class VpnAutomationManager(private val context: Context) {
             if (activeNet != null) {
                 val caps = connectivityManager.getNetworkCapabilities(activeNet)
                 if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
-                    val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    if (hasInternet && isValidated) {
+                    val hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                    if (hasInternet) {
                         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
                             wifiNet = activeNet
                             wifiCaps = caps
@@ -352,6 +367,22 @@ class VpnAutomationManager(private val context: Context) {
                     }
                 }
             }
+        }
+
+        // Additional fallback: search allNetworks if Wi-Fi caps are still not found
+        if (wifiCaps == null && connectivityManager != null) {
+            try {
+                for (net in connectivityManager.allNetworks) {
+                    val caps = connectivityManager.getNetworkCapabilities(net) ?: continue
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                        wifiNet = net
+                        wifiCaps = caps
+                        networkCapabilitiesMap[net] = caps
+                        break
+                    }
+                }
+            } catch (_: Exception) {}
         }
 
         val isWifiUsable = wifiCaps != null
@@ -440,12 +471,14 @@ class VpnAutomationManager(private val context: Context) {
             }
         }
 
-        // 5s post-action cooldown (Item 6)
+        // 5s post-action cooldown (Item 6): only applies if physical network has not transitioned
+        val isNetworkTransition = (lastEvaluatedNetworkKey != currentNetworkKey)
         val now = System.currentTimeMillis()
-        if (now - lastActionTimestamp < 5000L && source != "force_evaluate" && source != "init") {
+        if (!isNetworkTransition && now - lastActionTimestamp < 5000L && source != "force_evaluate" && source != "init" && source != "direct_evaluate") {
             logAutoEvent("SKIP", "Ignoring evaluation during 5s post-action cooldown", currentNetworkKey, currentCleanSsid, source)
             return
         }
+        lastEvaluatedNetworkKey = currentNetworkKey
 
         // Check manual override (Item 1: network-scoped persisted override)
         if (settings.manualOverrideSuppressed) {
@@ -675,16 +708,12 @@ class VpnAutomationManager(private val context: Context) {
             }
         }
 
-        // 3. Fallback to WifiManager.connectionInfo
-        val hasLocationPerm = ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
+        // 3. Fallback to any valid cached SSID in networkSsidMap
+        val anyCached = networkSsidMap.values.firstOrNull { it != null }
+        if (anyCached != null) return anyCached
 
-        if (hasLocationPerm && wifiManager != null) {
+        // 4. Fallback to WifiManager.connectionInfo
+        if (wifiManager != null) {
             try {
                 val connectionInfo = wifiManager.connectionInfo
                 if (connectionInfo != null) {
