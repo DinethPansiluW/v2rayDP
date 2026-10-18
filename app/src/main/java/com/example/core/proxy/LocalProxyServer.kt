@@ -148,6 +148,16 @@ class LocalProxyServer(
                 Log.d(TAG, "SOCKS5 CONNECT request: $destHost:$destPort")
             }
 
+            // Domain & DoH Block Engine check
+            if (com.example.core.block.BlockEngine.getInstance().isBlocked(destHost, destPort)) {
+                Log.d(TAG, "SOCKS5 blocked destination: $destHost:$destPort")
+                // SOCKS5 reply: 0x05, 0x02 (connection not allowed by ruleset)
+                outStream.write(byteArrayOf(0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                outStream.flush()
+                client.close()
+                return
+            }
+
             // Open remote VLESS / VMess connection
             val tunnel = vmessEngine.openRemoteConnection(destHost, destPort)
 
@@ -200,6 +210,15 @@ class LocalProxyServer(
                 val host = hostPort[0]
                 val port = if (hostPort.size > 1) hostPort[1].toIntOrNull() ?: 443 else 443
 
+                // Domain & DoH Block Engine check
+                if (com.example.core.block.BlockEngine.getInstance().isBlocked(host, port)) {
+                    Log.d(TAG, "HTTP CONNECT blocked destination: $host:$port")
+                    outStream.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+                    outStream.flush()
+                    client.close()
+                    return
+                }
+
                 // Connect to remote VLESS / VMess
                 val tunnel = vmessEngine.openRemoteConnection(host, port)
 
@@ -223,6 +242,15 @@ class LocalProxyServer(
                     val hp = hostHeader.split(":")
                     val targetHost = hp[0]
                     val targetPort = if (hp.size > 1) hp[1].toIntOrNull() ?: 80 else 80
+
+                    // Domain & DoH Block Engine check
+                    if (com.example.core.block.BlockEngine.getInstance().isBlocked(targetHost, targetPort)) {
+                        Log.d(TAG, "HTTP request blocked destination: $targetHost:$targetPort")
+                        outStream.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+                        outStream.flush()
+                        client.close()
+                        return
+                    }
 
                     // Rewrite absolute URI in request line (e.g. "GET http://example.com/foo" -> "GET /foo")
                     val firstLineParts = initialLine.split(" ")

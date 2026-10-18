@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ads",
+    "name": "Ads",
+    "description": "Blocks ad servers, sponsored popups, and banners",
+    "url": "https://adaway.org/hosts.txt",
+    "format": "hosts"
+  },
+  {
+    "id": "trackers",
+    "name": "Trackers",
+    "description": "Blocks behavioural tracking, telemetry, and web analytics",
+    "url": "https://v.firebog.net/hosts/Easyprivacy.txt",
+    "format": "domains"
+  },
+  {
+    "id": "malware",
+    "name": "Malware & Phishing",
+    "description": "Blocks known scam, fraud, spyware, and phishing distribution domains",
+    "url": "https://malware-filter.gitlab.io/malware-filter/phishing-filter-hosts.txt",
+    "format": "hosts"
+  }
+]

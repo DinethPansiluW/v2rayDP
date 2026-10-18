@@ -63,6 +63,7 @@ class V2RayVpnService : VpnService() {
                 val profileId = intent?.getLongExtra(EXTRA_PROFILE_ID, -1L) ?: -1L
                 startConnectingWatchdog()
                 serviceScope.launch(Dispatchers.IO) {
+                    com.example.core.block.BlockEngine.getInstance(applicationContext).loadIfNeeded()
                     val profile = resolveProfile(if (profileId > 0) profileId else null)
 
                     if (profile != null) {
@@ -302,6 +303,7 @@ class V2RayVpnService : VpnService() {
         logEvent("INFO", "Stopping VPN: $reason")
         cancelConnectingWatchdog()
         unregisterUnderlyingNetworkListener()
+        com.example.core.block.BlockEngine.getInstance(applicationContext).flushCounters()
         coreManager?.stopCore(reason)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -328,6 +330,7 @@ class V2RayVpnService : VpnService() {
         unregisterUnderlyingNetworkListener()
         stateObserverJob?.cancel()
         statsObserverJob?.cancel()
+        com.example.core.block.BlockEngine.getInstance(applicationContext).flushCounters()
         coreManager?.stopCore("Service destroyed")
         if (instance === this) {
             instance = null

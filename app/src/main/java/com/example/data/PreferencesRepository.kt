@@ -151,6 +151,51 @@ class PreferencesRepository(context: Context) {
         get() = prefs.getString(KEY_SECONDARY_DNS, "8.8.8.8") ?: "8.8.8.8"
         set(value) = prefs.edit().putString(KEY_SECONDARY_DNS, value).apply()
 
+    // Domain Blocking Preferences (Feature 2)
+    var isBlockingEnabled: Boolean
+        get() = prefs.getBoolean(KEY_BLOCKING_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_BLOCKING_ENABLED, value).apply()
+
+    var isBlockDohProviders: Boolean
+        get() = prefs.getBoolean(KEY_BLOCK_DOH_PROVIDERS, false)
+        set(value) = prefs.edit().putBoolean(KEY_BLOCK_DOH_PROVIDERS, value).apply()
+
+    var isAutoUpdateWeekly: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_UPDATE_WEEKLY, false)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_UPDATE_WEEKLY, value).apply()
+
+    var blockedTotalCount: Long
+        get() = prefs.getLong(KEY_BLOCKED_TOTAL_COUNT, 0L)
+        set(value) = prefs.edit().putLong(KEY_BLOCKED_TOTAL_COUNT, value).apply()
+
+    fun getPresetEnabled(id: String, default: Boolean = true): Boolean {
+        return prefs.getBoolean("preset_enabled_$id", default)
+    }
+
+    fun setPresetEnabled(id: String, enabled: Boolean) {
+        prefs.edit().putBoolean("preset_enabled_$id", enabled).apply()
+    }
+
+    fun getPresetLastUpdated(id: String): Long {
+        return prefs.getLong("preset_updated_$id", 0L)
+    }
+
+    fun setPresetLastUpdated(id: String, timestamp: Long) {
+        prefs.edit().putLong("preset_updated_$id", timestamp).apply()
+    }
+
+    fun getPresetEntryCount(id: String): Int {
+        return prefs.getInt("preset_count_$id", 0)
+    }
+
+    fun setPresetEntryCount(id: String, count: Int) {
+        prefs.edit().putInt("preset_count_$id", count).apply()
+    }
+
+    fun resetBlockedTotalCount() {
+        blockedTotalCount = 0L
+    }
+
     companion object {
         private const val KEY_AUTO_ENABLED = "auto_globally_enabled"
         private const val KEY_START_ON_LAUNCH = "start_on_launch"
@@ -185,5 +230,10 @@ class PreferencesRepository(context: Context) {
         private const val KEY_BYPASS_LAN = "bypass_lan"
         private const val KEY_PRIMARY_DNS = "primary_dns"
         private const val KEY_SECONDARY_DNS = "secondary_dns"
+
+        private const val KEY_BLOCKING_ENABLED = "domain_blocking_enabled"
+        private const val KEY_BLOCK_DOH_PROVIDERS = "block_doh_providers"
+        private const val KEY_AUTO_UPDATE_WEEKLY = "auto_update_weekly"
+        private const val KEY_BLOCKED_TOTAL_COUNT = "blocked_total_count"
     }
 }

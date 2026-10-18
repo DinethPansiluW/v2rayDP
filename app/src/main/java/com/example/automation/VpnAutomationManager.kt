@@ -149,24 +149,32 @@ class VpnAutomationManager(private val context: Context) {
                     }
 
                     override fun onLost(network: Network) {
-                        networkCapabilitiesMap.remove(network)
-                        networkSsidMap.remove(network)
+                        try {
+                            if (network != null) {
+                                networkCapabilitiesMap.remove(network)
+                                networkSsidMap.remove(network)
+                            }
+                        } catch (_: Throwable) {}
                         notifyNetworkEvent("cb_onLost")
                     }
 
                     override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                        networkCapabilitiesMap[network] = caps
-                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                            val transportInfo = caps.transportInfo
-                            if (transportInfo is WifiInfo) {
-                                val clean = cleanSsidString(transportInfo.ssid)
-                                if (clean != null) {
-                                    networkSsidMap[network] = clean
-                                } else {
-                                    networkSsidMap.remove(network)
+                        try {
+                            if (network != null && caps != null) {
+                                networkCapabilitiesMap[network] = caps
+                                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                                    val transportInfo = caps.transportInfo
+                                    if (transportInfo is WifiInfo) {
+                                        val clean = cleanSsidString(transportInfo.ssid)
+                                        if (clean != null) {
+                                            networkSsidMap[network] = clean
+                                        } else {
+                                            networkSsidMap.remove(network)
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        } catch (_: Throwable) {}
                         notifyNetworkEvent("cb_onCapabilitiesChanged")
                     }
                 }
@@ -177,24 +185,32 @@ class VpnAutomationManager(private val context: Context) {
                     }
 
                     override fun onLost(network: Network) {
-                        networkCapabilitiesMap.remove(network)
-                        networkSsidMap.remove(network)
+                        try {
+                            if (network != null) {
+                                networkCapabilitiesMap.remove(network)
+                                networkSsidMap.remove(network)
+                            }
+                        } catch (_: Throwable) {}
                         notifyNetworkEvent("cb_onLost")
                     }
 
                     override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                        networkCapabilitiesMap[network] = caps
-                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            val transportInfo = caps.transportInfo
-                            if (transportInfo is WifiInfo) {
-                                val clean = cleanSsidString(transportInfo.ssid)
-                                if (clean != null) {
-                                    networkSsidMap[network] = clean
-                                } else {
-                                    networkSsidMap.remove(network)
+                        try {
+                            if (network != null && caps != null) {
+                                networkCapabilitiesMap[network] = caps
+                                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    val transportInfo = caps.transportInfo
+                                    if (transportInfo is WifiInfo) {
+                                        val clean = cleanSsidString(transportInfo.ssid)
+                                        if (clean != null) {
+                                            networkSsidMap[network] = clean
+                                        } else {
+                                            networkSsidMap.remove(network)
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        } catch (_: Throwable) {}
                         notifyNetworkEvent("cb_onCapabilitiesChanged")
                     }
                 }

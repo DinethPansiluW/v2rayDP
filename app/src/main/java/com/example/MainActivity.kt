@@ -176,6 +176,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToQr = { navController.navigate("qr") },
                                 onNavigateToAutomation = { navController.navigate("automation") },
                                 onNavigateToHotspot = { navController.navigate("hotspot") },
+                                onNavigateToBlocking = { navController.navigate("blocking") },
                                 onNavigateToLogs = { navController.navigate("logs") },
                                 onAddManualServer = { proto ->
                                     profileToEdit = null
@@ -228,6 +229,14 @@ class MainActivity : ComponentActivity() {
                         composable("hotspot") {
                             HotspotScreen(
                                 viewModel = viewModel,
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable("blocking") {
+                            val blockViewModel: com.example.ui.BlockViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+                            com.example.ui.screens.BlockingScreen(
+                                viewModel = blockViewModel,
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }
