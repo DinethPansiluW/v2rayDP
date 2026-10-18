@@ -23,12 +23,15 @@ import com.example.model.TrafficStats
 import com.example.model.VmessLinkParser
 import com.example.service.V2RayVpnService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -152,9 +155,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             profileDao.setSelected(profile.id)
             if (connectionState.value.isRunning) {
-                // Restart service with the newly selected profile
+                // Smoothly switch service with the newly selected profile without stopSelf / flicker
                 V2RayVpnService.start(getApplication(), profile.id, isAutomated = false)
             }
+            showMessage("Switched to ${profile.name}")
         }
     }
 
@@ -180,24 +184,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (wasSelected) {
                 val remaining = profileDao.getAllProfiles()
                 if (remaining.isNotEmpty()) {
-                    profileDao.setSelected(remaining.first().id)
+                    val next = remaining.first()
+                    profileDao.setSelected(next.id)
+                    if (connectionState.value.isRunning) {
+                        V2RayVpnService.start(getApplication(), next.id, isAutomated = false)
+                    }
                 }
             }
-            showMessage("Server profile deleted")
+        }
+    }
+
+    fun restoreProfile(profile: ServerProfile) {
+        viewModelScope.launch {
+            val newId = profileDao.insertProfile(profile)
+            if (profile.isSelected) {
+                profileDao.setSelected(newId)
+                if (connectionState.value.isRunning) {
+                    V2RayVpnService.start(getApplication(), newId, isAutomated = false)
+                }
+            }
+            showMessage("Restored '${profile.name}'")
         }
     }
 
     fun importVmessLink(link: String) {
-        viewModelScope.launch {
-            val result = VmessLinkParser.parse(link)
-            result.onSuccess { parsed ->
-                val newId = profileDao.insertProfile(parsed.copy(isSelected = allProfiles.value.isEmpty()))
-                if (allProfiles.value.isEmpty()) {
-                    profileDao.setSelected(newId)
+        importMultipleLinks(link)
+    }
+
+    fun importMultipleLinks(linksText: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val lines = linksText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.isEmpty()) {
+                showMessage("No valid links found in input")
+                return@launch
+            }
+
+            val existing = profileDao.getAllProfiles()
+            var importedCount = 0
+            var duplicateCount = 0
+            val toInsert = mutableListOf<ServerProfile>()
+            var hadSelected = existing.any { it.isSelected }
+
+            for (line in lines) {
+                val result = VmessLinkParser.parse(line)
+                if (result.isSuccess) {
+                    val parsed = result.getOrThrow()
+                    val isDuplicate = existing.any {
+                        it.protocol.equals(parsed.protocol, ignoreCase = true) &&
+                        it.address.equals(parsed.address, ignoreCase = true) &&
+                        it.port == parsed.port &&
+                        it.uuid.equals(parsed.uuid, ignoreCase = true)
+                    } || toInsert.any {
+                        it.protocol.equals(parsed.protocol, ignoreCase = true) &&
+                        it.address.equals(parsed.address, ignoreCase = true) &&
+                        it.port == parsed.port &&
+                        it.uuid.equals(parsed.uuid, ignoreCase = true)
+                    }
+
+                    if (isDuplicate) {
+                        duplicateCount++
+                    } else {
+                        val willSelect = !hadSelected && toInsert.isEmpty() && existing.isEmpty()
+                        if (willSelect) {
+                            hadSelected = true
+                        }
+                        toInsert.add(parsed.copy(isSelected = willSelect))
+                        importedCount++
+                    }
                 }
-                showMessage("Imported VMess: ${parsed.name}")
-            }.onFailure { err ->
-                showMessage("Failed to import link: ${err.message}")
+            }
+
+            if (toInsert.isNotEmpty()) {
+                val insertedIds = profileDao.insertProfiles(toInsert)
+                val selectIndex = toInsert.indexOfFirst { it.isSelected }
+                if (selectIndex != -1 && selectIndex < insertedIds.size) {
+                    profileDao.setSelected(insertedIds[selectIndex])
+                }
+            }
+
+            val summary = buildString {
+                if (importedCount > 0) {
+                    append("Imported $importedCount profile${if (importedCount > 1) "s" else ""}")
+                    if (duplicateCount > 0) {
+                        append(" ($duplicateCount duplicate${if (duplicateCount > 1) "s" else ""} skipped)")
+                    }
+                } else if (duplicateCount > 0) {
+                    append("0 imported ($duplicateCount duplicate${if (duplicateCount > 1) "s" else ""} skipped)")
+                } else {
+                    append("No valid vless:// or vmess:// links found")
+                }
+            }
+            showMessage(summary)
+        }
+    }
+
+    fun importFromFile(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val cr = getApplication<Application>().contentResolver
+                val content = cr.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                importMultipleLinks(content)
+            } catch (e: Exception) {
+                showMessage("Failed to read file: ${e.message}")
             }
         }
     }
@@ -222,9 +310,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             _isPingingAll.value = true
             val profiles = profileDao.getAllProfiles()
-            for (p in profiles) {
-                val latency = PingTester.testLatency(p)
-                profileDao.updateLatency(p.id, latency, System.currentTimeMillis())
+            if (profiles.isEmpty()) {
+                _isPingingAll.value = false
+                return@launch
+            }
+            val semaphore = Semaphore(3)
+            val timestamp = System.currentTimeMillis()
+
+            coroutineScope {
+                profiles.forEach { p ->
+                    launch {
+                        semaphore.withPermit {
+                            val latency = PingTester.testLatency(p)
+                            profileDao.updateLatency(p.id, latency, timestamp)
+                        }
+                    }
+                }
             }
             _isPingingAll.value = false
             showMessage("Ping test completed for ${profiles.size} servers")

@@ -1,15 +1,12 @@
 package com.example.core.block
 
 import android.content.Context
-import android.net.Uri
 import android.util.Log
-import com.example.V2RayApplication
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.BufferedReader
 import java.io.File
-import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -23,7 +20,12 @@ class BlockListManager(private val context: Context) {
             return dir
         }
 
-    fun loadSourcesFromAssets(): List<BlocklistSource> {
+    fun isCombinedListPresent(): Boolean {
+        val file = File(blocklistDir, "combined.txt")
+        return file.exists() && file.length() > 0
+    }
+
+    fun loadSources(): List<BlocklistSource> {
         return try {
             val jsonString = context.assets.open("blocklist_sources.json").bufferedReader().use { it.readText() }
             val array = JSONArray(jsonString)
@@ -34,9 +36,7 @@ class BlockListManager(private val context: Context) {
                     BlocklistSource(
                         id = obj.getString("id"),
                         name = obj.getString("name"),
-                        description = obj.optString("description", ""),
-                        url = obj.getString("url"),
-                        format = obj.optString("format", "hosts")
+                        url = obj.getString("url")
                     )
                 )
             }
@@ -44,201 +44,171 @@ class BlockListManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load blocklist_sources.json: ${e.message}")
             listOf(
-                BlocklistSource("ads", "Ads", "Blocks ad networks and sponsored tracking", "https://adaway.org/hosts.txt", "hosts"),
-                BlocklistSource("trackers", "Trackers", "Blocks behavioural analytics and telemetry", "https://v.firebog.net/hosts/Easyprivacy.txt", "domains"),
-                BlocklistSource("malware", "Malware & Phishing", "Blocks phishing, fraud and spyware hosts", "https://malware-filter.gitlab.io/malware-filter/phishing-filter-hosts.txt", "hosts")
+                BlocklistSource("ads", "Ads", "https://adaway.org/hosts.txt"),
+                BlocklistSource("trackers", "Trackers", "https://v.firebog.net/hosts/Easyprivacy.txt"),
+                BlocklistSource("malware", "Malware & Phishing", "https://malware-filter.gitlab.io/malware-filter/phishing-filter-hosts.txt")
             )
         }
     }
 
-    suspend fun downloadPreset(source: BlocklistSource): Result<Int> = withContext(Dispatchers.IO) {
-        var conn: HttpURLConnection? = null
+    suspend fun downloadAndMergeAll(): Result<Int> = withContext(Dispatchers.IO) {
+        val sources = loadSources()
+        val allDomains = LinkedHashSet<String>(128_000)
+
+        for (source in sources) {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL(source.url)
+                conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 15_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "v2rayDP-Android/1.0")
+                }
+
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                    var line: String? = reader.readLine()
+                    var bytesRead = 0L
+                    while (line != null) {
+                        bytesRead += line.length + 1
+                        if (bytesRead > 30L * 1024 * 1024) break // Safety cap per list
+                        val domain = parseDomainFromLine(line)
+                        if (domain != null) {
+                            allDomains.add(domain)
+                        }
+                        line = reader.readLine()
+                    }
+                } else {
+                    Log.w(TAG, "Source ${source.name} returned HTTP $code")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error downloading ${source.name}: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
+        }
+
+        if (allDomains.isEmpty()) {
+            return@withContext Result.failure(Exception("Could not download blocklists. Check your internet and try again."))
+        }
+
         try {
-            val url = URL(source.url)
-            conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 15_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "v2rayDP-Android/1.0")
-            }
-
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                return@withContext Result.failure(Exception("HTTP $code: ${conn.responseMessage}"))
-            }
-
-            val targetFile = File(blocklistDir, "${source.id}.txt")
-            val tempFile = File(blocklistDir, "${source.id}.tmp")
-
-            var count = 0
-            val maxBytes = 25L * 1024 * 1024 // 25 MB limit
-            var totalBytesRead = 0L
+            val tempFile = File(blocklistDir, "combined.tmp")
+            val targetFile = File(blocklistDir, "combined.txt")
 
             tempFile.bufferedWriter().use { writer ->
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                var line: String? = reader.readLine()
-                while (line != null) {
-                    totalBytesRead += line.length + 1
-                    if (totalBytesRead > maxBytes) {
-                        break
-                    }
-                    val domain = parseDomainFromLine(line)
-                    if (domain != null) {
-                        writer.write(domain)
-                        writer.newLine()
-                        count++
-                    }
-                    line = reader.readLine()
+                for (domain in allDomains) {
+                    writer.write(domain)
+                    writer.newLine()
                 }
             }
 
-            // Atomic rename
             if (tempFile.exists()) {
                 if (targetFile.exists()) targetFile.delete()
-                val renamed = tempFile.renameTo(targetFile)
-                if (!renamed) {
+                if (!tempFile.renameTo(targetFile)) {
                     tempFile.copyTo(targetFile, overwrite = true)
                     tempFile.delete()
                 }
             }
-
-            val now = System.currentTimeMillis()
-            val prefs = V2RayApplication.get().preferencesRepository
-            prefs.setPresetLastUpdated(source.id, now)
-            prefs.setPresetEntryCount(source.id, count)
-
-            BlockEngine.getInstance(context).reload()
-            Result.success(count)
+            Result.success(allDomains.size)
         } catch (e: Exception) {
-            Log.e(TAG, "Error downloading blocklist ${source.id}: ${e.message}")
+            Log.e(TAG, "Error writing combined blocklist: ${e.message}")
             Result.failure(e)
-        } finally {
-            conn?.disconnect()
         }
     }
 
-    suspend fun downloadAll(): Map<String, Result<Int>> = withContext(Dispatchers.IO) {
-        val sources = loadSourcesFromAssets()
-        val results = mutableMapOf<String, Result<Int>>()
-        for (source in sources) {
-            results[source.id] = downloadPreset(source)
-        }
-        BlockEngine.getInstance(context).reload()
-        results
-    }
-
-    fun getCustomRules(isBlock: Boolean): List<String> {
-        val fileName = if (isBlock) "custom_block.txt" else "custom_allow.txt"
-        val file = File(blocklistDir, fileName)
+    fun getCustomRules(): List<String> {
+        val file = File(blocklistDir, "custom_block.txt")
         if (!file.exists()) return emptyList()
-        return file.readLines().mapNotNull { normalizeRule(it) }.distinct()
-    }
-
-    fun addCustomRule(rule: String, isBlock: Boolean): Boolean {
-        val norm = normalizeRule(rule) ?: return false
-        val fileName = if (isBlock) "custom_block.txt" else "custom_allow.txt"
-        val file = File(blocklistDir, fileName)
-        val existing = if (file.exists()) file.readLines().toMutableSet() else mutableSetOf()
-        if (existing.add(norm)) {
-            file.writeText(existing.joinToString("\n") + "\n")
-            BlockEngine.getInstance(context).reload()
-            return true
-        }
-        return false
-    }
-
-    fun removeCustomRule(rule: String, isBlock: Boolean): Boolean {
-        val norm = normalizeRule(rule) ?: rule.trim().lowercase()
-        val fileName = if (isBlock) "custom_block.txt" else "custom_allow.txt"
-        val file = File(blocklistDir, fileName)
-        if (!file.exists()) return false
-        val existing = file.readLines().toMutableSet()
-        val removed = existing.remove(norm) || existing.remove(rule.trim().lowercase())
-        if (removed) {
-            file.writeText(existing.joinToString("\n") + "\n")
-            BlockEngine.getInstance(context).reload()
-            return true
-        }
-        return false
-    }
-
-    suspend fun importRules(uri: Uri, isBlock: Boolean): Result<Int> = withContext(Dispatchers.IO) {
-        try {
-            val inputStream = context.contentResolver.openInputStream(uri)
-                ?: return@withContext Result.failure(Exception("Cannot open file stream"))
-
-            val newRules = mutableSetOf<String>()
-            BufferedReader(InputStreamReader(inputStream)).use { reader ->
-                var line = reader.readLine()
-                while (line != null) {
-                    val norm = normalizeRule(line) ?: parseDomainFromLine(line)
-                    if (norm != null) newRules.add(norm)
-                    line = reader.readLine()
-                }
-            }
-
-            if (newRules.isEmpty()) {
-                return@withContext Result.success(0)
-            }
-
-            val fileName = if (isBlock) "custom_block.txt" else "custom_allow.txt"
-            val file = File(blocklistDir, fileName)
-            val existing = if (file.exists()) file.readLines().toMutableSet() else mutableSetOf()
-            existing.addAll(newRules)
-            file.writeText(existing.joinToString("\n") + "\n")
-
-            BlockEngine.getInstance(context).reload()
-            Result.success(newRules.size)
+        return try {
+            file.readLines()
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
         } catch (e: Exception) {
-            Result.failure(e)
+            emptyList()
         }
     }
 
-    suspend fun exportRules(uri: Uri, isBlock: Boolean): Result<Int> = withContext(Dispatchers.IO) {
-        try {
-            val rules = getCustomRules(isBlock)
-            val outputStream = context.contentResolver.openOutputStream(uri)
-                ?: return@withContext Result.failure(Exception("Cannot open destination stream"))
+    fun addCustomRule(rawDomain: String): Boolean {
+        val domain = normalizeCustomRule(rawDomain) ?: return false
+        val current = getCustomRules().toMutableList()
+        if (current.contains(domain)) return false
 
-            outputStream.bufferedWriter().use { writer ->
-                for (r in rules) {
-                    writer.write(r)
-                    writer.newLine()
-                }
-            }
-            Result.success(rules.size)
+        current.add(0, domain)
+        val file = File(blocklistDir, "custom_block.txt")
+        return try {
+            file.writeText(current.joinToString("\n"))
+            true
         } catch (e: Exception) {
-            Result.failure(e)
+            Log.e(TAG, "Failed to save custom rule: ${e.message}")
+            false
         }
     }
 
-    private fun normalizeRule(raw: String): String? {
-        val trimmed = raw.trim().lowercase()
-        if (trimmed.isEmpty() || trimmed.startsWith("#")) return null
-        var s = trimmed.removePrefix("*.")
+    fun removeCustomRule(rawDomain: String): Boolean {
+        val domain = normalizeCustomRule(rawDomain) ?: rawDomain.trim().lowercase()
+        val current = getCustomRules().toMutableList()
+        val removed = current.remove(domain)
+        if (!removed) return false
+
+        val file = File(blocklistDir, "custom_block.txt")
+        return try {
+            file.writeText(current.joinToString("\n"))
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove custom rule: ${e.message}")
+            false
+        }
+    }
+
+    private fun normalizeCustomRule(raw: String): String? {
+        var s = raw.trim().lowercase()
+        if (s.startsWith("*.")) {
+            s = s.substring(2)
+        }
+        s = s.removePrefix("http://").removePrefix("https://").substringBefore("/").substringBefore(":")
         s = s.removeSuffix(".")
-        return if (isValidDomainOrIp(s)) s else null
+        if (s.isEmpty() || s.contains(" ") || !s.contains(".")) {
+            return null
+        }
+        return s
     }
 
     private fun parseDomainFromLine(line: String): String? {
         val trimmed = line.trim()
-        if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) return null
-
-        val parts = trimmed.split(Regex("\\s+"))
-        val candidate = when {
-            parts.size >= 2 && (parts[0] == "0.0.0.0" || parts[0] == "127.0.0.1") -> parts[1]
-            parts.isNotEmpty() -> parts[0]
-            else -> return null
+        if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) {
+            return null
         }
 
-        val domain = candidate.lowercase().trim().removeSuffix(".")
-        if (domain == "localhost" || domain == "broadcasthost" || domain == "local") return null
-        return if (isValidDomainOrIp(domain)) domain else null
-    }
+        val noComment = trimmed.substringBefore('#').substringBefore('!').trim()
+        if (noComment.isEmpty()) return null
 
-    private fun isValidDomainOrIp(s: String): Boolean {
-        if (s.isEmpty() || s.length > 253) return false
-        return !s.contains(" ") && !s.contains("/") && !s.contains("\\")
+        val tokens = noComment.split(Regex("\\s+"))
+        val candidate = if (tokens.size >= 2 && (tokens[0] == "0.0.0.0" || tokens[0] == "127.0.0.1" || tokens[0] == "::1")) {
+            tokens[1]
+        } else {
+            tokens[0]
+        }
+
+        var domain = candidate.lowercase().removeSuffix(".")
+        if (domain.startsWith("*.")) domain = domain.substring(2)
+
+        if (domain.isEmpty() ||
+            domain == "localhost" ||
+            domain == "localhost.localdomain" ||
+            domain == "local" ||
+            domain == "broadcasthost" ||
+            domain == "ip6-localhost" ||
+            domain == "ip6-loopback" ||
+            domain == "0.0.0.0"
+        ) {
+            return null
+        }
+
+        if (!domain.contains('.')) return null
+        return domain
     }
 
     companion object {

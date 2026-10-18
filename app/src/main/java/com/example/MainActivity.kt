@@ -37,7 +37,6 @@ import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.HotspotScreen
 import com.example.ui.screens.LogsScreen
 import com.example.ui.screens.QrCodeScreen
-import com.example.ui.screens.ServerProfilesScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.DarkBg
 import com.example.ui.theme.MyApplicationTheme
@@ -172,12 +171,17 @@ class MainActivity : ComponentActivity() {
                         composable("home") {
                             HomeScreen(
                                 viewModel = viewModel,
-                                onNavigateToServers = { navController.navigate("servers") },
+                                snackbarHostState = snackbarHostState,
                                 onNavigateToQr = { navController.navigate("qr") },
                                 onNavigateToAutomation = { navController.navigate("automation") },
                                 onNavigateToHotspot = { navController.navigate("hotspot") },
                                 onNavigateToBlocking = { navController.navigate("blocking") },
                                 onNavigateToLogs = { navController.navigate("logs") },
+                                onEditProfile = { p ->
+                                    profileToEdit = p
+                                    manualProtocol = p.protocol
+                                    showEditDialog = true
+                                },
                                 onAddManualServer = { proto ->
                                     profileToEdit = null
                                     manualProtocol = proto
@@ -187,23 +191,6 @@ class MainActivity : ComponentActivity() {
                                 onRequestLocationPermission = { requestLocationFlow() },
                                 onRequestBackgroundRun = {
                                     viewModel.requestIgnoreBatteryOptimizations(this@MainActivity)
-                                }
-                            )
-                        }
-
-                        composable("servers") {
-                            ServerProfilesScreen(
-                                viewModel = viewModel,
-                                onNavigateBack = { navController.popBackStack() },
-                                onAddProfile = {
-                                    profileToEdit = null
-                                    manualProtocol = "vless"
-                                    showEditDialog = true
-                                },
-                                onEditProfile = { p ->
-                                    profileToEdit = p
-                                    manualProtocol = p.protocol
-                                    showEditDialog = true
                                 }
                             )
                         }
