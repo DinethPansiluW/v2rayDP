@@ -94,7 +94,7 @@ fun SettingsScreen(
             }
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "Application Settings",
+                text = "Settings",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
@@ -308,6 +308,11 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // About Us Section
+            AboutSection()
 
             Spacer(modifier = Modifier.height(30.dp))
         }

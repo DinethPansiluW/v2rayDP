@@ -153,15 +153,15 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(userMessage) {
                     userMessage?.let {
-                        snackbarHostState.showSnackbar(it)
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar(it, duration = androidx.compose.material3.SnackbarDuration.Short)
                         viewModel.dismissUserMessage()
                     }
                 }
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
-                    containerColor = DarkBg,
-                    snackbarHost = { SnackbarHost(snackbarHostState) }
+                    containerColor = DarkBg
                 ) { innerPadding ->
                     NavHost(
                         navController = navController,
@@ -177,6 +177,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToHotspot = { navController.navigate("hotspot") },
                                 onNavigateToBlocking = { navController.navigate("blocking") },
                                 onNavigateToLogs = { navController.navigate("logs") },
+                                onNavigateToSettings = { navController.navigate("settings") },
                                 onEditProfile = { p ->
                                     profileToEdit = p
                                     manualProtocol = p.protocol
@@ -230,6 +231,13 @@ class MainActivity : ComponentActivity() {
 
                         composable("logs") {
                             LogsScreen(
+                                viewModel = viewModel,
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+
+                        composable("settings") {
+                            SettingsScreen(
                                 viewModel = viewModel,
                                 onNavigateBack = { navController.popBackStack() }
                             )

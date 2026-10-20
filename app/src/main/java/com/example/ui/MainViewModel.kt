@@ -158,7 +158,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Smoothly switch service with the newly selected profile without stopSelf / flicker
                 V2RayVpnService.start(getApplication(), profile.id, isAutomated = false)
             }
-            showMessage("Switched to ${profile.name}")
         }
     }
 
@@ -203,7 +202,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     V2RayVpnService.start(getApplication(), newId, isAutomated = false)
                 }
             }
-            showMessage("Restored '${profile.name}'")
         }
     }
 
@@ -297,6 +295,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             isTestingSingleProfile = true
             try {
+                profileDao.updateLatency(profile.id, 0, System.currentTimeMillis())
                 val latency = PingTester.testLatency(profile)
                 profileDao.updateLatency(profile.id, latency, System.currentTimeMillis())
             } finally {
@@ -321,6 +320,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 profiles.forEach { p ->
                     launch {
                         semaphore.withPermit {
+                            profileDao.updateLatency(p.id, 0, timestamp)
                             val latency = PingTester.testLatency(p)
                             profileDao.updateLatency(p.id, latency, timestamp)
                         }
@@ -328,7 +328,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             _isPingingAll.value = false
-            showMessage("Ping test completed for ${profiles.size} servers")
         }
     }
 

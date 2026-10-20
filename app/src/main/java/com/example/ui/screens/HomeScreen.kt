@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -64,6 +66,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
@@ -122,6 +125,7 @@ fun HomeScreen(
     onNavigateToHotspot: () -> Unit,
     onNavigateToBlocking: () -> Unit,
     onNavigateToLogs: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     onEditProfile: (ServerProfile) -> Unit,
     onAddManualServer: (String) -> Unit, // "vless" or "vmess"
     onPrepareVpn: () -> Unit,
@@ -172,7 +176,8 @@ fun HomeScreen(
                     onNavigateToAutomation,
                     onNavigateToHotspot,
                     onNavigateToBlocking,
-                    onNavigateToLogs
+                    onNavigateToLogs,
+                    onNavigateToSettings
                 ) {
                     listOf(
                         DrawerItemData("Automation & Rules", Icons.Default.Autorenew, "drawer_item_automation") {
@@ -190,6 +195,10 @@ fun HomeScreen(
                         DrawerItemData("Logs & Diagnostics", Icons.Default.Info, "drawer_item_logs") {
                             coroutineScope.launch { drawerState.close() }
                             onNavigateToLogs()
+                        },
+                        DrawerItemData("Settings", Icons.Default.Settings, "drawer_item_settings") {
+                            coroutineScope.launch { drawerState.close() }
+                            onNavigateToSettings()
                         }
                     )
                 }
@@ -225,12 +234,16 @@ fun HomeScreen(
             }
         }
     ) {
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(DarkBg)
-                .padding(16.dp)
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
             // Top App Bar with hamburger icon, app icon + title, Test all icon, QR icon, "+" menu
             Row(
                 modifier = Modifier
@@ -267,7 +280,7 @@ fun HomeScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Image(
-                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            painter = painterResource(id = R.drawable.app_logo),
                             contentDescription = "v2rayDP App Icon",
                             modifier = Modifier.fillMaxSize()
                         )
@@ -491,6 +504,7 @@ fun HomeScreen(
                                     val deleted = profile
                                     viewModel.deleteProfile(deleted)
                                     coroutineScope.launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
                                         val result = snackbarHostState.showSnackbar(
                                             message = "Deleted '${deleted.name}'",
                                             actionLabel = "Undo",
@@ -518,6 +532,7 @@ fun HomeScreen(
 
             Button(
                 onClick = {
+                    snackbarHostState.currentSnackbarData?.dismiss()
                     if (isRunning) {
                         viewModel.stopVpn("User tapped stop service")
                     } else {
@@ -526,6 +541,7 @@ fun HomeScreen(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .navigationBarsPadding()
                     .height(56.dp)
                     .testTag("vpn_toggle_button"),
                 shape = RoundedCornerShape(16.dp),
@@ -547,7 +563,18 @@ fun HomeScreen(
                 )
             }
         }
+
+        // SnackbarHost placed in the HomeScreen root Box, aligned BottomCenter,
+        // with bottom padding = Start button height + button vertical margins + 12.dp (+ navigation bar inset)
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 96.dp, start = 16.dp, end = 16.dp)
+        )
     }
+}
 
     // Exported V2Ray JSON Dialog
     if (jsonConfigToView != null) {
@@ -783,7 +810,7 @@ private fun AppDrawerHeader(
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                    painter = painterResource(id = R.drawable.app_logo),
                     contentDescription = "v2rayDP App Logo",
                     modifier = Modifier.fillMaxSize()
                 )

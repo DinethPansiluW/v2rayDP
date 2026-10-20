@@ -39,11 +39,19 @@ fun LatencyBadge(latencyMs: Int, modifier: Modifier = Modifier) {
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(color, CircleShape)
-            )
+            if (latencyMs == 0) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(9.dp),
+                    strokeWidth = 1.5.dp,
+                    color = color
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(color, CircleShape)
+                )
+            }
             Text(
                 text = " $text",
                 color = color,

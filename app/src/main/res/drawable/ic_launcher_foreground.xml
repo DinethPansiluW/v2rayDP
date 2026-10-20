@@ -1,57 +1,8 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-
-    <!-- Globe Grid in background top right -->
-    <!-- Globe circle -->
-    <path
-        android:strokeColor="#5588B0"
-        android:strokeWidth="1.2"
-        android:pathData="M 64,28 A 14,14 0 1 0 64,56 A 14,14 0 1 0 64,28 Z" />
-    <!-- Latitude lines -->
-    <path
-        android:strokeColor="#5588B0"
-        android:strokeWidth="1.0"
-        android:pathData="M 51,37 L 77,37 M 50,42 L 78,42 M 51,47 L 77,47" />
-    <!-- Longitude arcs -->
-    <path
-        android:strokeColor="#5588B0"
-        android:strokeWidth="1.0"
-        android:pathData="M 64,28 C 59,32 59,52 64,56 M 64,28 C 69,32 69,52 64,56 M 64,28 L 64,56" />
-
-    <!-- Left Wing of V (Blue Gradient) -->
-    <path android:pathData="M 32,32 L 47,32 L 54,67 L 43,67 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="32"
-                android:startY="32"
-                android:endX="54"
-                android:endY="67"
-                android:type="linear">
-                <item android:color="#00D2FF" android:offset="0.0" />
-                <item android:color="#0066FF" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-
-    <!-- Right Wing of V (Crisp White/Silver with bevel) -->
-    <path
-        android:fillColor="#F4F7FC"
-        android:pathData="M 54,67 L 69,38 L 78,40 L 58,74 Z" />
-
-    <!-- Orbiting Cyan Ring with Speed Streak -->
-    <path
-        android:strokeColor="#00E5FF"
-        android:strokeWidth="2.5"
-        android:strokeLineCap="round"
-        android:pathData="M 36,60 C 34,65 42,70 54,69 C 67,68 76,60 79,53 C 81,49 80,45 77,43" />
-
-    <!-- Flight arrow / paper plane at ring head -->
-    <path
-        android:fillColor="#00E5FF"
-        android:pathData="M 76,41 L 84,38 L 81,46 L 78,43 Z" />
-
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="72dp"
+        android:height="72dp"
+        android:drawable="@drawable/app_logo"
+        android:gravity="center" />
+</layer-list>
