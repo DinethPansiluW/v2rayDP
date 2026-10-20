@@ -12,7 +12,20 @@ class PreferencesRepository(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("v2raydp_prefs", Context.MODE_PRIVATE)
 
-    private val _automationSettings = MutableStateFlow(loadAutomationSettings())
+    private val _automationSettings: MutableStateFlow<AutomationSettings>
+
+    init {
+        if (!prefs.getBoolean("automation_defaults_v2", false)) {
+            prefs.edit()
+                .putBoolean(KEY_AUTO_ENABLED, false)
+                .putBoolean(KEY_BACKGROUND_RUN, false)
+                .putBoolean(KEY_START_ON_LAUNCH, false)
+                .putBoolean("automation_defaults_v2", true)
+                .apply()
+        }
+        _automationSettings = MutableStateFlow(loadAutomationSettings())
+    }
+
     val automationSettings: StateFlow<AutomationSettings> = _automationSettings.asStateFlow()
 
     fun getAutomationSettings(): AutomationSettings = _automationSettings.value
@@ -22,6 +35,7 @@ class PreferencesRepository(context: Context) {
             putBoolean(KEY_AUTO_ENABLED, newSettings.isAutomationGloballyEnabled)
             putBoolean(KEY_START_ON_LAUNCH, newSettings.startOnLaunch)
             putBoolean(KEY_BACKGROUND_RUN, newSettings.backgroundRunEnabled)
+            putBoolean(KEY_BACKGROUND_START_BLOCKED, newSettings.backgroundStartBlocked)
             putBoolean(KEY_WIFI_AUTO_START, newSettings.autoStartOnWifi)
             putBoolean(KEY_WIFI_MATCH_ANY, newSettings.matchAnyWifiNetwork)
             putString(KEY_WIFI_SPECIFIC_SSID, newSettings.specificSsid)
@@ -106,9 +120,10 @@ class PreferencesRepository(context: Context) {
         val defaultProfId = prefs.getLong(KEY_DEFAULT_PROFILE_ID, -1L)
 
         return AutomationSettings(
-            isAutomationGloballyEnabled = prefs.getBoolean(KEY_AUTO_ENABLED, true),
+            isAutomationGloballyEnabled = prefs.getBoolean(KEY_AUTO_ENABLED, false),
             startOnLaunch = prefs.getBoolean(KEY_START_ON_LAUNCH, false),
-            backgroundRunEnabled = prefs.getBoolean(KEY_BACKGROUND_RUN, true),
+            backgroundRunEnabled = prefs.getBoolean(KEY_BACKGROUND_RUN, false),
+            backgroundStartBlocked = prefs.getBoolean(KEY_BACKGROUND_START_BLOCKED, false),
             autoStartOnWifi = prefs.getBoolean(KEY_WIFI_AUTO_START, true),
             matchAnyWifiNetwork = prefs.getBoolean(KEY_WIFI_MATCH_ANY, true),
             specificSsid = prefs.getString(KEY_WIFI_SPECIFIC_SSID, "") ?: "",
@@ -192,6 +207,17 @@ class PreferencesRepository(context: Context) {
         prefs.edit().putInt("preset_count_$id", count).apply()
     }
 
+    var backgroundStartBlocked: Boolean
+        get() = prefs.getBoolean(KEY_BACKGROUND_START_BLOCKED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_BACKGROUND_START_BLOCKED, value).apply()
+            _automationSettings.value = _automationSettings.value.copy(backgroundStartBlocked = value)
+        }
+
+    var isBlockingStrictMode: Boolean
+        get() = prefs.getBoolean(KEY_BLOCKING_STRICT_MODE, true)
+        set(value) = prefs.edit().putBoolean(KEY_BLOCKING_STRICT_MODE, value).apply()
+
     fun resetBlockedTotalCount() {
         blockedTotalCount = 0L
     }
@@ -200,6 +226,7 @@ class PreferencesRepository(context: Context) {
         private const val KEY_AUTO_ENABLED = "auto_globally_enabled"
         private const val KEY_START_ON_LAUNCH = "start_on_launch"
         private const val KEY_BACKGROUND_RUN = "background_run_enabled"
+        private const val KEY_BACKGROUND_START_BLOCKED = "background_start_blocked"
         private const val KEY_WIFI_AUTO_START = "wifi_auto_start"
         private const val KEY_WIFI_MATCH_ANY = "wifi_match_any"
         private const val KEY_WIFI_SPECIFIC_SSID = "wifi_specific_ssid"
@@ -232,6 +259,7 @@ class PreferencesRepository(context: Context) {
         private const val KEY_SECONDARY_DNS = "secondary_dns"
 
         private const val KEY_BLOCKING_ENABLED = "domain_blocking_enabled"
+        private const val KEY_BLOCKING_STRICT_MODE = "blocking_strict_mode"
         private const val KEY_BLOCK_DOH_PROVIDERS = "block_doh_providers"
         private const val KEY_AUTO_UPDATE_WEEKLY = "auto_update_weekly"
         private const val KEY_BLOCKED_TOTAL_COUNT = "blocked_total_count"

@@ -11,6 +11,8 @@ import android.os.Build
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -119,14 +121,16 @@ fun AboutSection(modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .size(48.dp)
                         .background(DarkSurfaceVariant, CircleShape)
-                        .border(1.5.dp, AccentCyan, CircleShape)
-                        .padding(4.dp),
+                        .border(1.5.dp, AccentCyan, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
-                        painter = painterResource(id = R.drawable.app_logo),
-                        contentDescription = "v2rayDP App Logo",
-                        modifier = Modifier.fillMaxSize()
+                        painter = painterResource(id = R.drawable.ic_logo),
+                        contentDescription = "App logo",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
                     )
                 }
 

@@ -20,6 +20,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -154,7 +157,49 @@ fun AutomationScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Background Run & Permissions Card
+            // On App Launch Card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(14.dp)),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text("Connect VPN when the app opens", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                        Text("Starts VPN automatically once upon app launch (default OFF)", fontSize = 12.sp, color = TextSecondary)
+                    }
+                    Switch(
+                        checked = settings.startOnLaunch,
+                        onCheckedChange = {
+                            viewModel.updateAutomationSettings(settings.copy(startOnLaunch = it))
+                        },
+                        colors = appSwitchColors(),
+                        modifier = Modifier.testTag("start_on_launch_switch")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Background Run Card
+            val bgStatusText = when {
+                !settings.isAutomationGloballyEnabled || !settings.backgroundRunEnabled -> "Off"
+                !settings.autoStartOnWifi && !settings.autoStartOnMobileData -> "Not needed - turn on a Wi-Fi or Mobile Data start rule"
+                else -> "Active"
+            }
+            val bgStatusColor = when (bgStatusText) {
+                "Active" -> StatusConnected
+                "Off" -> TextSecondary
+                else -> StatusConnecting
+            }
+
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -167,47 +212,69 @@ fun AutomationScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("BACKGROUND RUN & PERMISSIONS", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextSecondary)
-                        IconButton(
-                            onClick = { viewModel.refreshPermissionsState() },
-                            modifier = Modifier.size(24.dp)
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Run in background", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                            Text(
+                                "Watches Wi-Fi and mobile data when the app is closed and the VPN is off, then applies your rules. No notification, no polling.",
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
+                        }
+                        Switch(
+                            checked = settings.backgroundRunEnabled,
+                            onCheckedChange = {
+                                viewModel.updateAutomationSettings(settings.copy(backgroundRunEnabled = it))
+                            },
+                            colors = appSwitchColors(),
+                            modifier = Modifier.testTag("background_run_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Status: $bgStatusText",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = bgStatusColor
+                    )
+
+                    if (settings.backgroundStartBlocked) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = StatusError.copy(alpha = 0.15f))
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = AccentCyan, modifier = Modifier.size(16.dp))
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Warning, contentDescription = null, tint = StatusError, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Background start blocked by Android: allow unrestricted battery", fontSize = 12.sp, color = StatusError, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Background Run (Battery Optimization)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    if (settings.backgroundRunEnabled && !isBatteryIgnored) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
                             Text(
-                                if (isBatteryIgnored) "Unrestricted • Will not be killed by OS" else "Restricted • Android may kill background VPN",
+                                text = "Needed on Android 12+ so Android lets the app start the VPN in the background.",
                                 fontSize = 11.sp,
-                                color = if (isBatteryIgnored) StatusConnected else StatusConnecting
+                                color = StatusConnecting,
+                                modifier = Modifier.weight(1f).padding(end = 8.dp)
                             )
-                        }
-                        if (!isBatteryIgnored) {
                             Button(
                                 onClick = onRequestBackgroundRun,
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = androidx.compose.ui.graphics.Color.Black),
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = Color.Black),
                                 shape = RoundedCornerShape(8.dp),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                 modifier = Modifier.height(30.dp).testTag("automation_enable_background_run_button")
                             ) {
-                                Text("Enable", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .background(StatusConnected.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text("Enabled", fontSize = 11.sp, color = StatusConnected, fontWeight = FontWeight.Bold)
+                                Text("Allow unrestricted battery", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -216,6 +283,7 @@ fun AutomationScreen(
                     HorizontalDivider(color = DarkSurfaceBorder, thickness = 0.8.dp)
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    // Wi-Fi SSID Permission (Location)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -235,7 +303,7 @@ fun AutomationScreen(
                                 colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant, contentColor = AccentCyan),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, AccentCyan),
                                 shape = RoundedCornerShape(8.dp),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                 modifier = Modifier.height(30.dp).testTag("automation_grant_location_button")
                             ) {
                                 Text("Grant", fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -250,55 +318,6 @@ fun AutomationScreen(
                             }
                         }
                     }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Diagnostic & Force Test Trigger
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(14.dp)),
-                colors = CardDefaults.cardColors(containerColor = DarkSurface)
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("LIVE STATE & TEST", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextSecondary)
-                        Button(
-                            onClick = { viewModel.automationManager.forceEvaluateNow() },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentCyan, contentColor = androidx.compose.ui.graphics.Color.Black),
-                            modifier = Modifier.height(30.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-                        ) {
-                            Text("Test Rules Now", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    val lastStatus by viewModel.automationManager.lastAutomationStatus.collectAsState()
-                    val isRadioOn by viewModel.automationManager.isWifiRadioEnabled.collectAsState()
-
-                    Text(
-                        text = "• Wi-Fi Radio: ${if (isRadioOn) "ON (Enabled)" else "OFF (Disabled)"}",
-                        fontSize = 12.sp,
-                        color = if (isRadioOn) StatusConnected else StatusError
-                    )
-                    Text(
-                        text = "• Wi-Fi Connection: ${if (isWifiConnected) "Connected (${currentSsid ?: "Wi-Fi"})" else "Disconnected"}",
-                        fontSize = 12.sp,
-                        color = if (isWifiConnected) StatusConnected else TextSecondary
-                    )
-                    Text(
-                        text = "• Automation Status: $lastStatus",
-                        fontSize = 12.sp,
-                        color = AccentCyan
-                    )
                 }
             }
 
@@ -350,6 +369,7 @@ fun AutomationScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .alpha(if (settings.isAutomationGloballyEnabled) 1f else 0.45f)
                     .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp)),
                 colors = CardDefaults.cardColors(containerColor = DarkSurface)
             ) {
@@ -647,6 +667,7 @@ fun AutomationScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .alpha(if (settings.isAutomationGloballyEnabled) 1f else 0.45f)
                     .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp)),
                 colors = CardDefaults.cardColors(containerColor = DarkSurface)
             ) {

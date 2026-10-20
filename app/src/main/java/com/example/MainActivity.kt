@@ -12,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
@@ -31,6 +32,7 @@ import com.example.model.ServerProfile
 import com.example.receiver.VpnActionReceiver
 import com.example.service.V2RayVpnService
 import com.example.ui.MainViewModel
+import com.example.ui.screens.AboutScreen
 import com.example.ui.screens.AutomationScreen
 import com.example.ui.screens.EditServerDialog
 import com.example.ui.screens.HomeScreen
@@ -120,8 +122,19 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val splashStartTime = System.currentTimeMillis()
+        splashScreen.setKeepOnScreenCondition {
+            val elapsed = System.currentTimeMillis() - splashStartTime
+            val isLoaded = viewModel.allProfiles.value.isNotEmpty() || elapsed >= 600
+            !isLoaded
+        }
+        splashScreen.setOnExitAnimationListener { splashScreenViewProvider ->
+            splashScreenViewProvider.remove()
+        }
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -178,6 +191,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToBlocking = { navController.navigate("blocking") },
                                 onNavigateToLogs = { navController.navigate("logs") },
                                 onNavigateToSettings = { navController.navigate("settings") },
+                                onNavigateToAbout = { navController.navigate("about") },
                                 onEditProfile = { p ->
                                     profileToEdit = p
                                     manualProtocol = p.protocol
@@ -239,6 +253,13 @@ class MainActivity : ComponentActivity() {
                         composable("settings") {
                             SettingsScreen(
                                 viewModel = viewModel,
+                                onNavigateBack = { navController.popBackStack() },
+                                onNavigateToLogs = { navController.navigate("logs") }
+                            )
+                        }
+
+                        composable("about") {
+                            AboutScreen(
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }

@@ -86,11 +86,86 @@ class VpnAutomationManager(private val context: Context) {
         .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         .build()
 
+    private var isPendingIntentRegistered = false
+
+    @Synchronized
+    fun applyMonitoringPolicy(settings: AutomationSettings, vpnRunning: Boolean) {
+        val wifiRuleOn = settings.autoStartOnWifi
+        val mobileRuleOn = settings.autoStartOnMobileData
+        val backgroundNeeded = settings.isAutomationGloballyEnabled && settings.backgroundRunEnabled && (wifiRuleOn || mobileRuleOn)
+        val stopRulesNeeded = settings.isAutomationGloballyEnabled && vpnRunning &&
+                (settings.autoStopOnWifiLeave || settings.autoStopOnWifiOff || settings.autoStopOnMobileDataDisabled)
+
+        if (backgroundNeeded || stopRulesNeeded) {
+            registerBackgroundPendingIntentCallback()
+        } else {
+            unregisterBackgroundPendingIntentCallback()
+        }
+    }
+
+    private fun getCallbackPendingIntent(): PendingIntent {
+        val intent = Intent(context, NetworkChangeReceiver::class.java).apply {
+            action = NetworkChangeReceiver.ACTION_CONNECTIVITY_CALLBACK
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            NetworkChangeReceiver.REQUEST_CODE_NETWORK_CALLBACK,
+            intent,
+            flags
+        )
+    }
+
+    private fun registerBackgroundPendingIntentCallback() {
+        if (connectivityManager == null || isPendingIntentRegistered) return
+        try {
+            val pendingIntent = getCallbackPendingIntent()
+            connectivityManager.registerNetworkCallback(networkRequest, pendingIntent)
+            isPendingIntentRegistered = true
+            logAutoEvent("DEBUG", "Registered system PendingIntent network callback", source = "policy")
+        } catch (e: Exception) {
+            logAutoEvent("WARN", "PendingIntent network callback registration failed: ${e.message}", source = "policy")
+        }
+    }
+
+    private fun unregisterBackgroundPendingIntentCallback() {
+        if (connectivityManager == null || !isPendingIntentRegistered) return
+        try {
+            val pendingIntent = getCallbackPendingIntent()
+            connectivityManager.unregisterNetworkCallback(pendingIntent)
+            pendingIntent.cancel()
+            isPendingIntentRegistered = false
+            logAutoEvent("DEBUG", "Unregistered system PendingIntent network callback", source = "policy")
+        } catch (e: Exception) {
+            logAutoEvent("WARN", "Failed to unregister PendingIntent callback: ${e.message}", source = "policy")
+        }
+    }
+
     fun initialize() {
         _isWifiRadioEnabled.value = wifiManager?.isWifiEnabled ?: true
 
-        // 1. Register system PendingIntent network callback (API 26+) for background monitoring
-        registerBackgroundPendingIntentCallback()
+        val app = V2RayApplication.get()
+        val settings = app.preferencesRepository.getAutomationSettings()
+        val isVpnRunning = V2RayVpnService.serviceState.value.isRunning
+        applyMonitoringPolicy(settings, isVpnRunning)
+
+        scope.launch {
+            app.preferencesRepository.automationSettings.collect { s ->
+                val running = V2RayVpnService.serviceState.value.isRunning
+                applyMonitoringPolicy(s, running)
+            }
+        }
+
+        scope.launch {
+            V2RayVpnService.serviceState.collect { state ->
+                val s = app.preferencesRepository.getAutomationSettings()
+                applyMonitoringPolicy(s, state.isRunning)
+            }
+        }
 
         // 2. Start in-process channel consumer with 800ms conflated delay
         scope.launch {
@@ -104,6 +179,16 @@ class VpnAutomationManager(private val context: Context) {
         notifyNetworkEvent("init")
     }
 
+    fun onBootCompleted() {
+        val app = V2RayApplication.get()
+        val settings = app.preferencesRepository.getAutomationSettings()
+        val vpnRunning = V2RayVpnService.serviceState.value.isRunning
+        applyMonitoringPolicy(settings, vpnRunning)
+        if (settings.isAutomationGloballyEnabled) {
+            notifyNetworkEvent("boot")
+        }
+    }
+
     // --- Lifecycle observation (Item 8: in-process callback only while in foreground) ---
 
     fun onAppForegrounded() {
@@ -115,29 +200,6 @@ class VpnAutomationManager(private val context: Context) {
     fun onAppBackgrounded() {
         isForegroundActive = false
         unregisterInProcessMonitoring()
-    }
-
-    private fun registerBackgroundPendingIntentCallback() {
-        if (connectivityManager == null) return
-        try {
-            val intent = Intent(context, NetworkChangeReceiver::class.java).apply {
-                action = NetworkChangeReceiver.ACTION_CONNECTIVITY_CALLBACK
-            }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val pendingIntent = PendingIntent.getBroadcast(
-                context,
-                NetworkChangeReceiver.REQUEST_CODE_NETWORK_CALLBACK,
-                intent,
-                flags
-            )
-            connectivityManager.registerNetworkCallback(networkRequest, pendingIntent)
-        } catch (e: Exception) {
-            logAutoEvent("WARN", "PendingIntent network callback registration failed: ${e.message}", source = "init")
-        }
     }
 
     private fun registerInProcessMonitoring() {
@@ -264,14 +326,6 @@ class VpnAutomationManager(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    suspend fun onBootCompleted() {
-        val app = V2RayApplication.get()
-        val settings = app.preferencesRepository.getAutomationSettings()
-        if (settings.isAutomationGloballyEnabled) {
-            registerBackgroundPendingIntentCallback()
-            evaluateNow("boot_completed")
-        }
-    }
 
     fun notifyNetworkEvent(source: String) {
         inProcessChannel.trySend(source)
@@ -756,7 +810,27 @@ class VpnAutomationManager(private val context: Context) {
     private fun startVpnWithCooldown(profileId: Long?, triggerReason: String) {
         autoRetryCount++
         lastActionTimestamp = System.currentTimeMillis()
-        V2RayVpnService.start(context, profileId, isAutomated = true)
+        try {
+            V2RayVpnService.start(context, profileId, isAutomated = true)
+            val prefs = V2RayApplication.get().preferencesRepository
+            if (prefs.backgroundStartBlocked) {
+                prefs.backgroundStartBlocked = false
+            }
+        } catch (e: Exception) {
+            val isFgNotAllowed = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                e is android.app.ForegroundServiceStartNotAllowedException) ||
+                e.javaClass.name.contains("ForegroundServiceStartNotAllowedException")
+            if (isFgNotAllowed) {
+                logAutoEvent("ERROR", "Background start blocked by Android: allow unrestricted battery", source = triggerReason)
+                V2RayApplication.get().preferencesRepository.backgroundStartBlocked = true
+            } else {
+                logAutoEvent("ERROR", "Failed to start VPN: ${e.message}", source = triggerReason)
+            }
+        }
+    }
+
+    fun logBackgroundStartBlocked(source: String = "system") {
+        logAutoEvent("ERROR", "Background start blocked by Android: allow unrestricted battery", source = source)
     }
 
     private fun stopVpnWithCooldown(reason: String) {

@@ -27,6 +27,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Autorenew
@@ -124,8 +126,9 @@ fun HomeScreen(
     onNavigateToAutomation: () -> Unit,
     onNavigateToHotspot: () -> Unit,
     onNavigateToBlocking: () -> Unit,
-    onNavigateToLogs: () -> Unit,
+    onNavigateToLogs: () -> Unit = {},
     onNavigateToSettings: () -> Unit,
+    onNavigateToAbout: () -> Unit,
     onEditProfile: (ServerProfile) -> Unit,
     onAddManualServer: (String) -> Unit, // "vless" or "vmess"
     onPrepareVpn: () -> Unit,
@@ -176,8 +179,8 @@ fun HomeScreen(
                     onNavigateToAutomation,
                     onNavigateToHotspot,
                     onNavigateToBlocking,
-                    onNavigateToLogs,
-                    onNavigateToSettings
+                    onNavigateToSettings,
+                    onNavigateToAbout
                 ) {
                     listOf(
                         DrawerItemData("Automation & Rules", Icons.Default.Autorenew, "drawer_item_automation") {
@@ -192,13 +195,13 @@ fun HomeScreen(
                             coroutineScope.launch { drawerState.close() }
                             onNavigateToBlocking()
                         },
-                        DrawerItemData("Logs & Diagnostics", Icons.Default.Info, "drawer_item_logs") {
-                            coroutineScope.launch { drawerState.close() }
-                            onNavigateToLogs()
-                        },
                         DrawerItemData("Settings", Icons.Default.Settings, "drawer_item_settings") {
                             coroutineScope.launch { drawerState.close() }
                             onNavigateToSettings()
+                        },
+                        DrawerItemData("About Us", Icons.Default.Info, "drawer_item_about") {
+                            coroutineScope.launch { drawerState.close() }
+                            onNavigateToAbout()
                         }
                     )
                 }
@@ -275,14 +278,16 @@ fun HomeScreen(
                         modifier = Modifier
                             .size(38.dp)
                             .background(DarkSurfaceVariant, CircleShape)
-                            .border(1.5.dp, AccentCyan, CircleShape)
-                            .padding(4.dp),
+                            .border(1.5.dp, AccentCyan, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Image(
-                            painter = painterResource(id = R.drawable.app_logo),
-                            contentDescription = "v2rayDP App Icon",
-                            modifier = Modifier.fillMaxSize()
+                            painter = painterResource(id = R.drawable.ic_logo),
+                            contentDescription = "App logo",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
                         )
                     }
                     Spacer(modifier = Modifier.width(10.dp))
@@ -805,14 +810,16 @@ private fun AppDrawerHeader(
                 modifier = Modifier
                     .size(44.dp)
                     .background(DarkSurface, CircleShape)
-                    .border(1.5.dp, AccentCyan, CircleShape)
-                    .padding(5.dp),
+                    .border(1.5.dp, AccentCyan, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.app_logo),
-                    contentDescription = "v2rayDP App Logo",
-                    modifier = Modifier.fillMaxSize()
+                    painter = painterResource(id = R.drawable.ic_logo),
+                    contentDescription = "App logo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))

@@ -419,9 +419,20 @@ class V2RayVpnService : VpnService() {
                 }
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Failed to start VPN foreground service: ${e.message}")
+                val isFgNotAllowed = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    e is android.app.ForegroundServiceStartNotAllowedException) ||
+                    e.javaClass.name.contains("ForegroundServiceStartNotAllowedException")
+                if (isFgNotAllowed) {
+                    try {
+                        val app = V2RayApplication.get()
+                        app.preferencesRepository.backgroundStartBlocked = true
+                        app.automationManager.logBackgroundStartBlocked("fgs_start")
+                    } catch (_: Throwable) {}
+                }
                 val errState = ConnectionState.Error(e.message ?: "Failed to start service")
                 _serviceState.value = errState
                 V2RayCoreManager.setGlobalConnectionState(errState)
+                throw e
             }
         }
 

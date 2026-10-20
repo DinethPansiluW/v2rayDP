@@ -13,11 +13,12 @@ enum class WifiLeavePolicy(val displayName: String, val description: String) {
 }
 
 data class AutomationSettings(
-    val isAutomationGloballyEnabled: Boolean = true,
+    val isAutomationGloballyEnabled: Boolean = false,
 
     // Service Automation
     val startOnLaunch: Boolean = false,
-    val backgroundRunEnabled: Boolean = true,
+    val backgroundRunEnabled: Boolean = false,
+    val backgroundStartBlocked: Boolean = false,
 
     // Wi-Fi rules
     val autoStartOnWifi: Boolean = true,

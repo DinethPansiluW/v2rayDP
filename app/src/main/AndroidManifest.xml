@@ -32,7 +32,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.MyApplication"
+            android:theme="@style/Theme.App.Starting"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -100,12 +100,13 @@
             </intent-filter>
         </receiver>
 
-        <!-- Boot Receiver for Automation (Keep ONLY BOOT_COMPLETED per Android 8.0+ background limits) -->
+        <!-- Boot & Package Replaced Receiver for Automation -->
         <receiver
             android:name=".receiver.NetworkChangeReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
