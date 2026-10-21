@@ -1,11 +1,14 @@
 package com.example.core.vpn
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.example.model.AppBypassConfig
+import com.example.model.AppBypassMode
 import com.example.model.ServerProfile
 import java.io.File
 import java.net.InetAddress
@@ -50,7 +53,8 @@ class VpnTunnelManager(
         socksPort: Int = 10808,
         primaryDns: String = "1.1.1.1",
         secondaryDns: String = "8.8.8.8",
-        bypassLan: Boolean = true
+        bypassLan: Boolean = true,
+        appBypassConfig: AppBypassConfig = AppBypassConfig()
     ): Boolean {
         // Stop any previous tunnel / native service to avoid collisions or native conflicts
         stopTunnel()
@@ -71,11 +75,60 @@ class VpnTunnelManager(
                     Log.w(TAG, "IPv6 address/route configuration note: ${e.message}")
                 }
 
-                // Prevent VPN routing loop by excluding the app itself
-                try {
-                    addDisallowedApplication(vpnService.packageName)
-                } catch (e: Exception) {
-                    Log.w(TAG, "addDisallowedApplication warning: ${e.message}")
+                // App routing and per-app bypass configuration
+                // Android rule: VpnService.Builder cannot mix addAllowedApplication() and addDisallowedApplication()
+                if (!appBypassConfig.enabled) {
+                    // Feature OFF: current behavior (only addDisallowedApplication(own package))
+                    try {
+                        addDisallowedApplication(vpnService.packageName)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "addDisallowedApplication self warning: ${e.message}")
+                    }
+                } else {
+                    when (appBypassConfig.mode) {
+                        AppBypassMode.BYPASS_SELECTED -> {
+                            // Mode BYPASS_SELECTED ("Bypass only these apps"): addDisallowedApplication for every selected package AND own package. All other apps use VPN.
+                            try {
+                                addDisallowedApplication(vpnService.packageName)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "addDisallowedApplication self warning: ${e.message}")
+                            }
+                            for (pkg in appBypassConfig.selectedPackages) {
+                                if (pkg.isNotBlank() && pkg != vpnService.packageName) {
+                                    try {
+                                        addDisallowedApplication(pkg)
+                                    } catch (e: PackageManager.NameNotFoundException) {
+                                        Log.w(TAG, "Package $pkg not found, skipping bypass: ${e.message}")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "addDisallowedApplication failed for $pkg: ${e.message}")
+                                    }
+                                }
+                            }
+                        }
+                        AppBypassMode.BYPASS_ALL_EXCEPT_SELECTED -> {
+                            // Mode BYPASS_ALL_EXCEPT_SELECTED ("Bypass all except these apps"): addAllowedApplication for every selected package (never own package). All other apps bypass VPN.
+                            // If selected set is empty in this mode, Android would route ALL apps through VPN, so treat it as feature disabled (only disallow self).
+                            val targets = appBypassConfig.selectedPackages.filter { it.isNotBlank() && it != vpnService.packageName }
+                            if (targets.isEmpty()) {
+                                Log.w(TAG, "Selected packages empty in BYPASS_ALL_EXCEPT_SELECTED mode; treating as feature disabled (select at least one app)")
+                                try {
+                                    addDisallowedApplication(vpnService.packageName)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "addDisallowedApplication self warning: ${e.message}")
+                                }
+                            } else {
+                                for (pkg in targets) {
+                                    try {
+                                        addAllowedApplication(pkg)
+                                    } catch (e: PackageManager.NameNotFoundException) {
+                                        Log.w(TAG, "Package $pkg not found, skipping allowed: ${e.message}")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "addAllowedApplication failed for $pkg: ${e.message}")
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Routing & LAN bypass configuration

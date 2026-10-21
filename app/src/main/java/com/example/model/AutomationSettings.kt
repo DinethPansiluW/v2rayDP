@@ -12,12 +12,18 @@ enum class WifiLeavePolicy(val displayName: String, val description: String) {
     KEEP_VPN("Keep VPN running", "Keep running seamlessly without interruption")
 }
 
+enum class BackgroundRunMode(val displayName: String, val description: String) {
+    EFFICIENT("Efficient", "Event-driven, silent, needs unrestricted battery on Android 12+"),
+    RELIABLE("Reliable", "Lightweight background watch service with persistent reliability")
+}
+
 data class AutomationSettings(
     val isAutomationGloballyEnabled: Boolean = false,
 
     // Service Automation
     val startOnLaunch: Boolean = false,
     val backgroundRunEnabled: Boolean = false,
+    val backgroundRunMode: BackgroundRunMode = BackgroundRunMode.EFFICIENT,
     val backgroundStartBlocked: Boolean = false,
 
     // Wi-Fi rules

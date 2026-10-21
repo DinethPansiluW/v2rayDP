@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
@@ -55,6 +56,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -107,6 +109,7 @@ import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.StatusConnected
 import com.example.ui.theme.StatusDisconnected
 import com.example.ui.theme.StatusError
+import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
@@ -126,6 +129,7 @@ fun HomeScreen(
     onNavigateToAutomation: () -> Unit,
     onNavigateToHotspot: () -> Unit,
     onNavigateToBlocking: () -> Unit,
+    onNavigateToAppBypass: () -> Unit = {},
     onNavigateToLogs: () -> Unit = {},
     onNavigateToSettings: () -> Unit,
     onNavigateToAbout: () -> Unit,
@@ -179,6 +183,7 @@ fun HomeScreen(
                     onNavigateToAutomation,
                     onNavigateToHotspot,
                     onNavigateToBlocking,
+                    onNavigateToAppBypass,
                     onNavigateToSettings,
                     onNavigateToAbout
                 ) {
@@ -194,6 +199,10 @@ fun HomeScreen(
                         DrawerItemData("Add Blocking", Icons.Default.Shield, "drawer_item_blocking") {
                             coroutineScope.launch { drawerState.close() }
                             onNavigateToBlocking()
+                        },
+                        DrawerItemData("App Bypass", Icons.Default.AltRoute, "drawer_item_app_bypass") {
+                            coroutineScope.launch { drawerState.close() }
+                            onNavigateToAppBypass()
                         },
                         DrawerItemData("Settings", Icons.Default.Settings, "drawer_item_settings") {
                             coroutineScope.launch { drawerState.close() }
@@ -532,8 +541,22 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Start / Stop Button pinned at the bottom
-            val buttonBgColor = if (isRunning) StatusError else StatusConnected
-            val buttonText = if (isRunning) "Stop Service" else "Start Service"
+            val isBusy = connectionState.isBusy
+            val isStopping = connectionState is ConnectionState.Stopping
+            val isConnecting = connectionState is ConnectionState.Connecting
+
+            val buttonBgColor = when {
+                isStopping -> StatusWarning
+                isConnecting -> AccentCyan
+                isRunning -> StatusError
+                else -> StatusConnected
+            }
+            val buttonText = when {
+                isStopping -> "Stopping…"
+                isConnecting -> "Connecting…"
+                isRunning -> "Stop Service"
+                else -> "Start Service"
+            }
 
             Button(
                 onClick = {
@@ -544,6 +567,7 @@ fun HomeScreen(
                         onPrepareVpn()
                     }
                 },
+                enabled = !isBusy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
@@ -552,14 +576,24 @@ fun HomeScreen(
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = buttonBgColor,
-                    contentColor = Color.White
+                    contentColor = Color.White,
+                    disabledContainerColor = buttonBgColor.copy(alpha = 0.6f),
+                    disabledContentColor = Color.White.copy(alpha = 0.8f)
                 )
             ) {
-                Icon(
-                    imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp)
-                )
+                if (isBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
                     text = buttonText,

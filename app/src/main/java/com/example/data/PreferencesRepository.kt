@@ -1,8 +1,13 @@
 package com.example.data
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import com.example.model.AppBypassConfig
+import com.example.model.AppBypassMode
 import com.example.model.AutomationSettings
+import com.example.model.BackgroundRunMode
 import com.example.model.WifiLeavePolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +40,7 @@ class PreferencesRepository(context: Context) {
             putBoolean(KEY_AUTO_ENABLED, newSettings.isAutomationGloballyEnabled)
             putBoolean(KEY_START_ON_LAUNCH, newSettings.startOnLaunch)
             putBoolean(KEY_BACKGROUND_RUN, newSettings.backgroundRunEnabled)
+            putString(KEY_BACKGROUND_RUN_MODE, newSettings.backgroundRunMode.name)
             putBoolean(KEY_BACKGROUND_START_BLOCKED, newSettings.backgroundStartBlocked)
             putBoolean(KEY_WIFI_AUTO_START, newSettings.autoStartOnWifi)
             putBoolean(KEY_WIFI_MATCH_ANY, newSettings.matchAnyWifiNetwork)
@@ -115,6 +121,9 @@ class PreferencesRepository(context: Context) {
         val policyStr = prefs.getString(KEY_WIFI_LEAVE_POLICY, WifiLeavePolicy.STOP_VPN.name) ?: WifiLeavePolicy.STOP_VPN.name
         val policy = runCatching { WifiLeavePolicy.valueOf(policyStr) }.getOrDefault(WifiLeavePolicy.STOP_VPN)
 
+        val runModeStr = prefs.getString(KEY_BACKGROUND_RUN_MODE, BackgroundRunMode.EFFICIENT.name) ?: BackgroundRunMode.EFFICIENT.name
+        val runMode = runCatching { BackgroundRunMode.valueOf(runModeStr) }.getOrDefault(BackgroundRunMode.EFFICIENT)
+
         val wifiProfId = prefs.getLong(KEY_WIFI_PROFILE_ID, -1L)
         val mobileProfId = prefs.getLong(KEY_MOBILE_PROFILE_ID, -1L)
         val defaultProfId = prefs.getLong(KEY_DEFAULT_PROFILE_ID, -1L)
@@ -123,6 +132,7 @@ class PreferencesRepository(context: Context) {
             isAutomationGloballyEnabled = prefs.getBoolean(KEY_AUTO_ENABLED, false),
             startOnLaunch = prefs.getBoolean(KEY_START_ON_LAUNCH, false),
             backgroundRunEnabled = prefs.getBoolean(KEY_BACKGROUND_RUN, false),
+            backgroundRunMode = runMode,
             backgroundStartBlocked = prefs.getBoolean(KEY_BACKGROUND_START_BLOCKED, false),
             autoStartOnWifi = prefs.getBoolean(KEY_WIFI_AUTO_START, true),
             matchAnyWifiNetwork = prefs.getBoolean(KEY_WIFI_MATCH_ANY, true),
@@ -222,10 +232,119 @@ class PreferencesRepository(context: Context) {
         blockedTotalCount = 0L
     }
 
+    // Per-App Bypass Preferences
+    var appBypassEnabled: Boolean
+        get() = prefs.getBoolean(KEY_APP_BYPASS_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_APP_BYPASS_ENABLED, value).apply()
+
+    var appBypassMode: AppBypassMode
+        get() {
+            val raw = prefs.getString(KEY_APP_BYPASS_MODE, AppBypassMode.BYPASS_SELECTED.name) ?: AppBypassMode.BYPASS_SELECTED.name
+            return runCatching { AppBypassMode.valueOf(raw) }.getOrDefault(AppBypassMode.BYPASS_SELECTED)
+        }
+        set(value) = prefs.edit().putString(KEY_APP_BYPASS_MODE, value.name).apply()
+
+    var appBypassSelected: Set<String>
+        get() = prefs.getStringSet(KEY_APP_BYPASS_SELECTED, emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_APP_BYPASS_SELECTED, value).apply()
+
+    var bypassedPackages: Set<String>
+        get() = appBypassSelected
+        set(value) { appBypassSelected = value }
+
+    var bypassNewApps: Boolean
+        get() = prefs.getBoolean(KEY_BYPASS_NEW_APPS, false)
+        set(value) = prefs.edit().putBoolean(KEY_BYPASS_NEW_APPS, value).apply()
+
+    var isAutoBypassNewApps: Boolean
+        get() = bypassNewApps
+        set(value) { bypassNewApps = value }
+
+    var knownPackages: Set<String>
+        get() = prefs.getStringSet(KEY_KNOWN_PACKAGES, emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet(KEY_KNOWN_PACKAGES, value).apply()
+
+    fun getAppBypassConfig(): AppBypassConfig {
+        return AppBypassConfig(
+            enabled = appBypassEnabled,
+            mode = appBypassMode,
+            selectedPackages = appBypassSelected
+        )
+    }
+
+    /**
+     * Reconciles installed launchable packages with knownPackages.
+     * Applies new apps per bypass mode & bypassNewApps switch, prunes removed apps,
+     * and updates knownPackages.
+     * Returns true if appBypassSelected changed.
+     */
+    @Synchronized
+    fun reconcileNewApps(packageManager: PackageManager): Boolean {
+        val launchIntent = Intent(Intent.ACTION_MAIN, null).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val currentInstalled = try {
+            val resolveInfos = packageManager.queryIntentActivities(launchIntent, 0)
+            resolveInfos.mapNotNull { it.activityInfo?.packageName }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        if (currentInstalled.isEmpty()) return false
+
+        val known = knownPackages
+        if (known.isEmpty()) {
+            knownPackages = currentInstalled
+            return false
+        }
+
+        val newApps = currentInstalled - known
+        val removedApps = known - currentInstalled
+        var changed = false
+        val selected = appBypassSelected.toMutableSet()
+
+        if (removedApps.isNotEmpty()) {
+            if (selected.removeAll(removedApps)) {
+                changed = true
+            }
+        }
+
+        if (newApps.isNotEmpty()) {
+            for (newPkg in newApps) {
+                when (appBypassMode) {
+                    AppBypassMode.BYPASS_SELECTED -> {
+                        // ON: automatically added to bypass list (skips VPN)
+                        // OFF: uses the VPN (not added to bypass list)
+                        if (bypassNewApps) {
+                            if (selected.add(newPkg)) {
+                                changed = true
+                            }
+                        }
+                    }
+                    AppBypassMode.BYPASS_ALL_EXCEPT_SELECTED -> {
+                        // ON: NOT added to allowed list (so it bypasses)
+                        // OFF: automatically added to allowed list (so it uses the VPN)
+                        if (!bypassNewApps) {
+                            if (selected.add(newPkg)) {
+                                changed = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            appBypassSelected = selected
+        }
+        knownPackages = currentInstalled
+        return changed
+    }
+
     companion object {
         private const val KEY_AUTO_ENABLED = "auto_globally_enabled"
         private const val KEY_START_ON_LAUNCH = "start_on_launch"
         private const val KEY_BACKGROUND_RUN = "background_run_enabled"
+        private const val KEY_BACKGROUND_RUN_MODE = "background_run_mode"
         private const val KEY_BACKGROUND_START_BLOCKED = "background_start_blocked"
         private const val KEY_WIFI_AUTO_START = "wifi_auto_start"
         private const val KEY_WIFI_MATCH_ANY = "wifi_match_any"
@@ -263,5 +382,13 @@ class PreferencesRepository(context: Context) {
         private const val KEY_BLOCK_DOH_PROVIDERS = "block_doh_providers"
         private const val KEY_AUTO_UPDATE_WEEKLY = "auto_update_weekly"
         private const val KEY_BLOCKED_TOTAL_COUNT = "blocked_total_count"
+
+        private const val KEY_APP_BYPASS_ENABLED = "app_bypass_enabled"
+        private const val KEY_APP_BYPASS_MODE = "app_bypass_mode"
+        private const val KEY_APP_BYPASS_SELECTED = "app_bypass_selected"
+        private const val KEY_BYPASS_NEW_APPS = "bypass_new_apps"
+        private const val KEY_KNOWN_PACKAGES = "known_packages"
+        private const val KEY_BYPASSED_PACKAGES = "bypassed_packages"
+        private const val KEY_AUTO_BYPASS_NEW_APPS = "auto_bypass_new_apps"
     }
 }

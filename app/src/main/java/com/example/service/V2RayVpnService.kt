@@ -2,8 +2,10 @@ package com.example.service
 
 import android.app.Notification
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -12,6 +14,7 @@ import com.example.MainActivity
 import com.example.R
 import com.example.V2RayApplication
 import com.example.core.V2RayCoreManager
+import com.example.model.AppBypassConfig
 import com.example.model.AppLog
 import com.example.model.ConnectionState
 import com.example.model.ServerProfile
@@ -23,7 +26,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class V2RayVpnService : VpnService() {
 
@@ -33,49 +38,92 @@ class V2RayVpnService : VpnService() {
     private var statsObserverJob: Job? = null
     private var connectingWatchdogJob: Job? = null
     private var hasStartedConnecting = false
+    @Volatile
+    private var isStopping = false
+
+    private var packageChangeReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        isStopping = false
         promoteToForeground("v2rayDP", "VPN service ready")
         coreManager = V2RayCoreManager(this)
+        registerPackageChangeReceiver()
         observeCoreState()
+    }
+
+    private fun registerPackageChangeReceiver() {
+        if (packageChangeReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val action = intent?.action ?: return
+                if (action == Intent.ACTION_PACKAGE_ADDED || action == Intent.ACTION_PACKAGE_REMOVED) {
+                    val app = V2RayApplication.get()
+                    val changed = app.preferencesRepository.reconcileNewApps(packageManager)
+                    if (changed) {
+                        _reconnectNeeded.value = true
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addDataScheme("package")
+        }
+        try {
+            registerReceiver(receiver, filter)
+            packageChangeReceiver = receiver
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to register dynamic package receiver: ${e.message}")
+        }
+    }
+
+    private fun unregisterPackageChangeReceiver() {
+        packageChangeReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (_: Exception) {}
+            packageChangeReceiver = null
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: ACTION_START
         val isAutomated = intent?.getBooleanExtra(EXTRA_IS_AUTOMATED, false) ?: false
 
-        promoteToForeground("v2rayDP", if (action == ACTION_STOP) "Stopping VPN service…" else "Connecting to proxy…")
-
-        when (action) {
-            ACTION_STOP -> {
-                val reason = intent?.getStringExtra(EXTRA_REASON) ?: "Stopped by user"
-                if (!isAutomated) {
-                    val app = V2RayApplication.get()
-                    val netKey = app.automationManager.getCurrentNetworkKey()
-                    app.preferencesRepository.setManualOverride("Notification stop action", netKey)
-                    app.preferencesRepository.clearStoppedByPolicy()
-                }
-                stopVpn(reason)
+        if (action == ACTION_STOP) {
+            val reason = intent?.getStringExtra(EXTRA_REASON) ?: "Stopped by user"
+            if (!isAutomated) {
+                val app = V2RayApplication.get()
+                val netKey = app.automationManager.getCurrentNetworkKey()
+                app.preferencesRepository.setManualOverride("Notification stop action", netKey)
+                app.preferencesRepository.clearStoppedByPolicy()
             }
-            ACTION_START -> {
-                val profileId = intent?.getLongExtra(EXTRA_PROFILE_ID, -1L) ?: -1L
-                startConnectingWatchdog()
-                serviceScope.launch(Dispatchers.IO) {
-                    com.example.core.block.BlockEngine.getInstance(applicationContext).loadIfNeeded()
-                    val profile = resolveProfile(if (profileId > 0) profileId else null)
+            stopVpn(reason)
+            return START_NOT_STICKY
+        }
 
-                    if (profile != null) {
-                        startVpnWithProfile(profile)
-                    } else {
-                        val errorMsg = "No profiles configured"
-                        cancelConnectingWatchdog()
-                        _serviceState.value = ConnectionState.Error(errorMsg)
-                        V2RayCoreManager.setGlobalConnectionState(ConnectionState.Error(errorMsg))
-                        logEvent("ERROR", errorMsg)
-                        stopVpn(errorMsg)
-                    }
+        promoteToForeground("v2rayDP", "Connecting to proxy…")
+
+        if (action == ACTION_START) {
+            isStopping = false
+            val profileId = intent?.getLongExtra(EXTRA_PROFILE_ID, -1L) ?: -1L
+            startConnectingWatchdog()
+            serviceScope.launch(Dispatchers.IO) {
+                com.example.core.block.BlockEngine.getInstance(applicationContext).loadIfNeeded()
+                val profile = resolveProfile(if (profileId > 0) profileId else null)
+
+                if (profile != null) {
+                    startVpnWithProfile(profile)
+                } else {
+                    val errorMsg = "No profiles configured"
+                    cancelConnectingWatchdog()
+                    _serviceState.value = ConnectionState.Error(errorMsg)
+                    V2RayCoreManager.setGlobalConnectionState(ConnectionState.Error(errorMsg))
+                    logEvent("ERROR", errorMsg)
+                    stopVpn(errorMsg)
                 }
             }
         }
@@ -126,6 +174,11 @@ class V2RayVpnService : VpnService() {
         val prefs = app.preferencesRepository
         val settings = prefs.getAutomationSettings()
 
+        // Reconcile launchable apps before building the tunnel
+        prefs.reconcileNewApps(packageManager)
+        val appBypassConfig = prefs.getAppBypassConfig()
+        _reconnectNeeded.value = false
+
         logEvent("INFO", "Starting VPN with ${profile.protocol.uppercase()}: ${profile.name} (${profile.address}:${profile.port})")
         updateNotification("Connecting to ${profile.name}…", "Configuring tunnel…")
 
@@ -135,7 +188,8 @@ class V2RayVpnService : VpnService() {
             httpPort = settings.hotspotProxyPort + 1,
             primaryDns = prefs.primaryDns,
             secondaryDns = prefs.secondaryDns,
-            bypassLan = prefs.isBypassLan
+            bypassLan = prefs.isBypassLan,
+            appBypassConfig = appBypassConfig
         ) ?: false
 
         if (success) {
@@ -222,22 +276,42 @@ class V2RayVpnService : VpnService() {
                         hasStartedConnecting = true
                         updateNotification("Connecting to ${state.profileName}", state.step)
                     }
+                    is ConnectionState.Stopping -> {
+                        isStopping = true
+                    }
                     is ConnectionState.Disconnected -> {
+                        isStopping = true
                         cancelConnectingWatchdog()
                         unregisterUnderlyingNetworkListener()
+                        stateObserverJob?.cancel()
+                        statsObserverJob?.cancel()
+                        stateObserverJob = null
+                        statsObserverJob = null
                         if (hasStartedConnecting) {
                             try {
                                 stopForeground(STOP_FOREGROUND_REMOVE)
                             } catch (_: Exception) {}
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                            nm?.cancel(NOTIFICATION_ID)
+                            nm?.cancel(NOTIFICATION_ID + 1)
                             stopSelf()
                         }
                     }
                     is ConnectionState.Error -> {
+                        isStopping = true
                         cancelConnectingWatchdog()
+                        unregisterUnderlyingNetworkListener()
+                        stateObserverJob?.cancel()
+                        statsObserverJob?.cancel()
+                        stateObserverJob = null
+                        statsObserverJob = null
                         if (hasStartedConnecting) {
                             try {
                                 stopForeground(STOP_FOREGROUND_REMOVE)
                             } catch (_: Exception) {}
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                            nm?.cancel(NOTIFICATION_ID)
+                            nm?.cancel(NOTIFICATION_ID + 1)
                             stopSelf()
                         }
                     }
@@ -247,6 +321,7 @@ class V2RayVpnService : VpnService() {
 
         statsObserverJob = serviceScope.launch {
             manager.trafficStats.collect { stats ->
+                if (isStopping) return@collect
                 _serviceTrafficStats.value = stats
                 val currentState = _serviceState.value
                 if (currentState is ConnectionState.Connected) {
@@ -260,6 +335,10 @@ class V2RayVpnService : VpnService() {
     }
 
     private fun updateNotification(title: String, text: String) {
+        if (isStopping || instance !== this) return
+        val currentState = _serviceState.value
+        if (currentState !is ConnectionState.Connected && currentState !is ConnectionState.Connecting) return
+
         val notification = buildNotification(title, text)
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
         notificationManager?.notify(NOTIFICATION_ID, notification)
@@ -300,14 +379,25 @@ class V2RayVpnService : VpnService() {
     }
 
     fun stopVpn(reason: String = "User requested stop") {
+        isStopping = true
+        _serviceState.value = ConnectionState.Stopping(reason)
+        V2RayCoreManager.setGlobalConnectionState(_serviceState.value)
         logEvent("INFO", "Stopping VPN: $reason")
         cancelConnectingWatchdog()
         unregisterUnderlyingNetworkListener()
+        unregisterPackageChangeReceiver()
+        stateObserverJob?.cancel()
+        statsObserverJob?.cancel()
+        stateObserverJob = null
+        statsObserverJob = null
         com.example.core.block.BlockEngine.getInstance(applicationContext).flushCounters()
         coreManager?.stopCore(reason)
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {}
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
+        notificationManager?.cancel(NOTIFICATION_ID + 1)
         stopSelf()
     }
 
@@ -326,12 +416,22 @@ class V2RayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        isStopping = true
         cancelConnectingWatchdog()
         unregisterUnderlyingNetworkListener()
+        unregisterPackageChangeReceiver()
         stateObserverJob?.cancel()
         statsObserverJob?.cancel()
+        stateObserverJob = null
+        statsObserverJob = null
         com.example.core.block.BlockEngine.getInstance(applicationContext).flushCounters()
         coreManager?.stopCore("Service destroyed")
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
+        notificationManager?.cancel(NOTIFICATION_ID + 1)
         if (instance === this) {
             instance = null
             _serviceState.value = ConnectionState.Disconnected("Service destroyed")
@@ -360,6 +460,13 @@ class V2RayVpnService : VpnService() {
 
         private val _serviceTrafficStats = MutableStateFlow(TrafficStats())
         val serviceTrafficStats: StateFlow<TrafficStats> = _serviceTrafficStats.asStateFlow()
+
+        private val _reconnectNeeded = MutableStateFlow(false)
+        val reconnectNeeded: StateFlow<Boolean> = _reconnectNeeded.asStateFlow()
+
+        fun setReconnectNeeded(needed: Boolean) {
+            _reconnectNeeded.value = needed
+        }
 
         var instance: V2RayVpnService? = null
             private set
@@ -428,6 +535,23 @@ class V2RayVpnService : VpnService() {
                         app.preferencesRepository.backgroundStartBlocked = true
                         app.automationManager.logBackgroundStartBlocked("fgs_start")
                     } catch (_: Throwable) {}
+
+                    var startedViaPendingIntent = false
+                    try {
+                        val pi = PendingIntent.getForegroundService(
+                            context,
+                            1002,
+                            intent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
+                        pi.send()
+                        startedViaPendingIntent = true
+                    } catch (_: Exception) {}
+
+                    if (!startedViaPendingIntent) {
+                        promptUserToStartVpn(context, profileId)
+                    }
+                    return
                 }
                 val errState = ConnectionState.Error(e.message ?: "Failed to start service")
                 _serviceState.value = errState
@@ -436,26 +560,69 @@ class V2RayVpnService : VpnService() {
             }
         }
 
+        fun promptUserToStartVpn(context: Context, profileId: Long?) {
+            try {
+                val startIntent = Intent(context, V2RayVpnService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_IS_AUTOMATED, false)
+                    if (profileId != null && profileId > 0L) {
+                        putExtra(EXTRA_PROFILE_ID, profileId)
+                    }
+                }
+                val pendingIntent = PendingIntent.getService(
+                    context,
+                    1003,
+                    startIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val notification = NotificationCompat.Builder(context, V2RayApplication.NOTIFICATION_CHANNEL_VPN)
+                    .setSmallIcon(R.drawable.ic_vpn_key)
+                    .setContentTitle("Wi-Fi Connected: Tap to Connect VPN")
+                    .setContentText("Tap to start your VPN tunnel")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
+                    .build()
+
+                val nm = context.getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                nm?.notify(NOTIFICATION_ID + 1, notification)
+            } catch (_: Exception) {}
+        }
+
         fun stop(context: Context, reason: String = "User requested disconnect", isAutomated: Boolean = false) {
             val currentState = serviceState.value
-            if (currentState is ConnectionState.Disconnected || currentState is ConnectionState.Error) {
-                android.util.Log.d(TAG, "VPN is already disconnected or in error. Ignoring stop call.")
+            if (currentState is ConnectionState.Disconnected || currentState is ConnectionState.Error || currentState is ConnectionState.Stopping) {
+                android.util.Log.d(TAG, "VPN is already disconnected, error, or stopping. Ignoring stop call.")
                 return
             }
 
-            val intent = Intent(context, V2RayVpnService::class.java).apply {
-                action = ACTION_STOP
-                putExtra(EXTRA_REASON, reason)
-                putExtra(EXTRA_IS_AUTOMATED, isAutomated)
-            }
-            try {
-                if (instance != null) {
-                    instance?.stopVpn(reason)
-                } else {
-                    context.startService(intent)
+            _serviceState.value = ConnectionState.Stopping(reason)
+            V2RayCoreManager.setGlobalConnectionState(_serviceState.value)
+
+            val inst = instance
+            if (inst != null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    inst.stopVpn(reason)
                 }
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Failed to stop VPN service: ${e.message}")
+            } else {
+                _serviceState.value = ConnectionState.Disconnected(reason)
+                V2RayCoreManager.setGlobalConnectionState(_serviceState.value)
+                val nm = context.getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                nm?.cancel(NOTIFICATION_ID)
+                nm?.cancel(NOTIFICATION_ID + 1)
+            }
+        }
+
+        fun restart(context: Context, profileId: Long? = null, reason: String = "Restarting VPN") {
+            CoroutineScope(Dispatchers.Main).launch {
+                stop(context, reason, isAutomated = false)
+                withTimeoutOrNull(3000L) {
+                    serviceState.first { it is ConnectionState.Disconnected }
+                }
+                delay(300L)
+                start(context, profileId, isAutomated = false)
+                _reconnectNeeded.value = false
             }
         }
     }

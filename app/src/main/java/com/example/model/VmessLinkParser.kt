@@ -11,11 +11,76 @@ import java.nio.charset.StandardCharsets
 object VmessLinkParser {
 
     /**
+     * Sanitizes raw link input by trimming, stripping zero-width/BOM chars,
+     * removing surrounding quotes, backticks, < >, unwrapping markdown links,
+     * removing stray brackets/parentheses not part of IPv6, and cutting at whitespace.
+     */
+    fun sanitizeLink(rawInput: String): String {
+        var text = rawInput.trim()
+        // Remove zero-width and BOM characters
+        text = text.replace(Regex("[\\uFEFF\\u200B-\\u200D\\u2060\\u00A0]"), "")
+        // Surrounding quotes, backticks, < >
+        text = text.trim('\"', '\'', '`', '<', '>')
+
+        // Unwrap markdown links: [text](url) -> keep text part
+        text = text.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)")) { it.groupValues[1] }
+
+        // Remove stray [ ] ( ) that are not enclosing an IPv6 address
+        val atIdx = text.indexOf('@')
+        val queryIdx = text.indexOf('?', atIdx.coerceAtLeast(0))
+        val hostPart = if (atIdx != -1) {
+            if (queryIdx != -1) text.substring(atIdx + 1, queryIdx) else text.substring(atIdx + 1)
+        } else ""
+
+        val hasIpv6Host = hostPart.startsWith("[") && hostPart.contains("]")
+        if (!hasIpv6Host) {
+            text = text.replace("[", "").replace("]", "")
+        } else {
+            val closeBracket = text.indexOf(']', atIdx)
+            val prefix = text.substring(0, atIdx).replace("[", "").replace("]", "")
+            val ipv6 = text.substring(atIdx, closeBracket + 1)
+            val suffix = text.substring(closeBracket + 1).replace("[", "").replace("]", "")
+            text = prefix + ipv6 + suffix
+        }
+        text = text.replace("(", "").replace(")", "")
+
+        // Cut at first whitespace or newline
+        val firstWs = text.indexOfFirst { it.isWhitespace() }
+        if (firstWs != -1) {
+            text = text.substring(0, firstWs)
+        }
+        return text.trim()
+    }
+
+    /**
+     * Splits multiple links on a single line and sanitizes each.
+     */
+    fun splitLinks(raw: String): List<String> {
+        val pattern = Regex("(?:vmess|vless)://", RegexOption.IGNORE_CASE)
+        val matches = pattern.findAll(raw).toList()
+        if (matches.size <= 1) {
+            val sanitized = sanitizeLink(raw)
+            return if (sanitized.isNotBlank()) listOf(sanitized) else emptyList()
+        }
+        val result = mutableListOf<String>()
+        for (i in matches.indices) {
+            val start = matches[i].range.first
+            val end = if (i + 1 < matches.size) matches[i + 1].range.first else raw.length
+            val segment = raw.substring(start, end)
+            val sanitized = sanitizeLink(segment)
+            if (sanitized.isNotBlank()) {
+                result.add(sanitized)
+            }
+        }
+        return result
+    }
+
+    /**
      * Parses either a vmess:// or vless:// link into a ServerProfile.
      */
     fun parse(rawInput: String): Result<ServerProfile> {
         return runCatching {
-            val link = rawInput.trim()
+            val link = sanitizeLink(rawInput)
             when {
                 link.startsWith("vless://", ignoreCase = true) -> parseVlessLink(link)
                 link.startsWith("vmess://", ignoreCase = true) -> parseVmessLink(link)

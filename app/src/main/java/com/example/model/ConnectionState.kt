@@ -16,6 +16,10 @@ sealed class ConnectionState {
         val localProxyPort: Int = 10808
     ) : ConnectionState()
 
+    data class Stopping(
+        val reason: String = "Stopping…"
+    ) : ConnectionState()
+
     data class Error(
         val message: String,
         val timestamp: Long = System.currentTimeMillis()
@@ -23,6 +27,9 @@ sealed class ConnectionState {
 
     val isRunning: Boolean
         get() = this is Connected || this is Connecting
+
+    val isBusy: Boolean
+        get() = this is Connecting || this is Stopping
 }
 
 data class TrafficStats(

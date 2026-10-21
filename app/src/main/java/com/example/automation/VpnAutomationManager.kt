@@ -98,8 +98,12 @@ class VpnAutomationManager(private val context: Context) {
 
         if (backgroundNeeded || stopRulesNeeded) {
             registerBackgroundPendingIntentCallback()
+            registerDynamicWifiReceiver()
         } else {
             unregisterBackgroundPendingIntentCallback()
+            if (!isForegroundActive) {
+                unregisterDynamicWifiReceiver()
+            }
         }
     }
 
@@ -199,7 +203,21 @@ class VpnAutomationManager(private val context: Context) {
 
     fun onAppBackgrounded() {
         isForegroundActive = false
-        unregisterInProcessMonitoring()
+        inProcessCallback?.let {
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+            inProcessCallback = null
+        }
+        networkCapabilitiesMap.clear()
+        networkSsidMap.clear()
+
+        val settings = V2RayApplication.get().preferencesRepository.getAutomationSettings()
+        val vpnRunning = V2RayVpnService.serviceState.value.isRunning || V2RayVpnService.instance != null
+        val keepMonitoring = settings.isAutomationGloballyEnabled && (settings.backgroundRunEnabled || (vpnRunning && settings.autoStopOnWifiOff))
+        if (!keepMonitoring) {
+            unregisterDynamicWifiReceiver()
+        }
     }
 
     private fun registerInProcessMonitoring() {
@@ -295,7 +313,9 @@ class VpnAutomationManager(private val context: Context) {
         }
         networkCapabilitiesMap.clear()
         networkSsidMap.clear()
+    }
 
+    private fun unregisterDynamicWifiReceiver() {
         wifiStateReceiver?.let {
             try {
                 context.unregisterReceiver(it)
@@ -513,9 +533,10 @@ class VpnAutomationManager(private val context: Context) {
         val isWifiUsable = netStatus.isWifiUsable
         val isCellularUsable = netStatus.isCellularUsable
 
+        val isWifiRadioOn = wifiManager?.isWifiEnabled ?: isWifiUsable
         _isWifiConnected.value = isWifiUsable
         _isCellularConnected.value = isCellularUsable
-        _isWifiRadioEnabled.value = wifiManager?.isWifiEnabled ?: isWifiUsable
+        _isWifiRadioEnabled.value = isWifiRadioOn
 
         val detectedSsid = if (isWifiUsable) detectCurrentWifiSsid(netStatus.wifiNetwork, netStatus.wifiCaps) else null
         val currentCleanSsid = cleanSsidString(detectedSsid)
@@ -526,6 +547,15 @@ class VpnAutomationManager(private val context: Context) {
             isWifiUsable -> "WIFI:${currentCleanSsid ?: "<no-ssid>"}"
             isCellularUsable -> "CELLULAR:cell"
             else -> "NONE:none"
+        }
+
+        // Check if Wi-Fi turned off while VPN is running and autoStopOnWifiOff rule is active
+        val isVpnRunning = serviceState.isRunning || V2RayVpnService.instance != null
+        if (settings.isAutomationGloballyEnabled && settings.autoStopOnWifiOff && !isWifiRadioOn && isVpnRunning) {
+            _lastAutomationStatus.value = "Wi-Fi turned OFF -> Auto-stopping VPN"
+            logAutoEvent("AUTO", "Wi-Fi radio switched OFF. Auto-stopping VPN service.", currentNetworkKey, null, source)
+            stopVpnWithCooldown("Wi-Fi disabled by user")
+            return
         }
 
         // Error retry guard (Item 6: at most 2 retries per network key)
@@ -562,8 +592,6 @@ class VpnAutomationManager(private val context: Context) {
                 logAutoEvent("AUTO", "Physical network switched (${settings.manualOverrideNetworkKey} -> $currentNetworkKey). Manual override cleared.", currentNetworkKey, currentCleanSsid, source)
             }
         }
-
-        val isVpnRunning = serviceState.isRunning
 
         // 1. Handover Grace Period & Disconnect Check:
         if (isWifiUsable || isCellularUsable) {
@@ -620,7 +648,7 @@ class VpnAutomationManager(private val context: Context) {
 
             // Item 3: autoReconnectOnWifiReturn logic
             if (settings.stoppedByLeaveWifiSsid != null && currentCleanSsid != null &&
-                settings.stoppedByLeaveWifiSsid.equals(currentCleanSsid, ignoreCase = true)
+                isSameSsid(settings.stoppedByLeaveWifiSsid, currentCleanSsid)
             ) {
                 if (!settings.autoReconnectOnWifiReturn) {
                     _lastAutomationStatus.value = "Wi-Fi ($currentCleanSsid) returned, but auto-reconnect on return is OFF"
@@ -647,10 +675,8 @@ class VpnAutomationManager(private val context: Context) {
                     return
                 }
 
-                val specificClean = cleanSsidString(settings.specificSsid)
-                val configuredClean = settings.targetWifiSsids.mapNotNull { cleanSsidString(it) }
-                val isApproved = (specificClean != null && currentCleanSsid.equals(specificClean, ignoreCase = true)) ||
-                        configuredClean.any { it.equals(currentCleanSsid, ignoreCase = true) }
+                val isApproved = isSameSsid(currentCleanSsid, settings.specificSsid) ||
+                        settings.targetWifiSsids.any { isSameSsid(currentCleanSsid, it) }
 
                 if (isApproved) {
                     handleApprovedWifi(currentCleanSsid, settings, currentNetworkKey, source)
@@ -769,22 +795,40 @@ class VpnAutomationManager(private val context: Context) {
             if (cached != null) return cached
         }
 
-        // 2. Read directly from NetworkCapabilities.transportInfo (API 29+)
-        if (caps != null) {
-            val transportInfo = caps.transportInfo
-            if (transportInfo is WifiInfo) {
-                val clean = cleanSsidString(transportInfo.ssid)
-                if (clean != null) return clean
-            }
+        // 2. Read directly from passed NetworkCapabilities.transportInfo (API 29+)
+        if (caps != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val transportInfo = caps.transportInfo
+                if (transportInfo is WifiInfo) {
+                    val clean = cleanSsidString(transportInfo.ssid)
+                    if (clean != null) return clean
+                }
+            } catch (_: Exception) {}
         }
 
-        // 3. Fallback to any valid cached SSID in networkSsidMap
+        // 3. Fallback: inspect activeNetwork from ConnectivityManager (API 29+)
+        if (connectivityManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val activeNet = connectivityManager.activeNetwork
+                if (activeNet != null) {
+                    val activeCaps = connectivityManager.getNetworkCapabilities(activeNet)
+                    val info = activeCaps?.transportInfo
+                    if (info is WifiInfo) {
+                        val clean = cleanSsidString(info.ssid)
+                        if (clean != null) return clean
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 4. Fallback to any valid cached SSID in networkSsidMap
         val anyCached = networkSsidMap.values.firstOrNull { it != null }
         if (anyCached != null) return anyCached
 
-        // 4. Fallback to WifiManager.connectionInfo
+        // 5. Fallback to WifiManager.connectionInfo
         if (wifiManager != null) {
             try {
+                @Suppress("DEPRECATION")
                 val connectionInfo = wifiManager.connectionInfo
                 if (connectionInfo != null) {
                     val clean = cleanSsidString(connectionInfo.ssid)
@@ -797,14 +841,22 @@ class VpnAutomationManager(private val context: Context) {
     }
 
     fun cleanSsidString(raw: String?): String? {
-        if (raw.isNullOrBlank() || raw == "<unknown ssid>" || raw == "\"<unknown ssid>\"") {
+        if (raw.isNullOrBlank()) return null
+        val unquoted = raw.trim().removeSurrounding("\"").trim()
+        if (unquoted.isEmpty() ||
+            unquoted.equals("<unknown ssid>", ignoreCase = true) ||
+            unquoted.equals("0x", ignoreCase = true) ||
+            unquoted.equals("unknown", ignoreCase = true)
+        ) {
             return null
         }
-        var s = raw.trim()
-        if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
-            s = s.substring(1, s.length - 1)
-        }
-        return s.trim().ifEmpty { null }
+        return unquoted
+    }
+
+    fun isSameSsid(ssid1: String?, ssid2: String?): Boolean {
+        val s1 = cleanSsidString(ssid1) ?: return false
+        val s2 = cleanSsidString(ssid2) ?: return false
+        return s1.equals(s2, ignoreCase = true)
     }
 
     private fun startVpnWithCooldown(profileId: Long?, triggerReason: String) {

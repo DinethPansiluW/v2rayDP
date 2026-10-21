@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
@@ -72,7 +73,8 @@ import com.example.ui.theme.TextSecondary
 fun SettingsScreen(
     viewModel: MainViewModel,
     onNavigateBack: () -> Unit,
-    onNavigateToLogs: () -> Unit = {}
+    onNavigateToLogs: () -> Unit = {},
+    onNavigateToAppBypass: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = V2RayApplication.get()
@@ -310,6 +312,76 @@ fun SettingsScreen(
                         text = "For uninterrupted automation on Samsung devices:\n• Go to Settings -> Apps -> v2rayDP -> Battery -> Choose 'Unrestricted'.\n• Turn off 'Put unused apps to sleep' for v2rayDP.",
                         fontSize = 12.sp,
                         color = TextSecondary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Per-App Routing / Bypass Section
+            Text(
+                text = "PER-APP ROUTING",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextSecondary,
+                letterSpacing = 1.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(16.dp))
+                    .clickable { onNavigateToAppBypass() }
+                    .testTag("settings_app_bypass_card"),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(DarkSurfaceVariant, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Apps,
+                            contentDescription = "Bypass Selected Apps",
+                            tint = AccentCyan,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Bypass Selected Apps",
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary,
+                            fontSize = 15.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val modeLabel = if (!prefs.appBypassEnabled) {
+                            "Disabled"
+                        } else when (prefs.appBypassMode) {
+                            com.example.model.AppBypassMode.BYPASS_SELECTED -> "Bypass selected (${prefs.appBypassSelected.size} apps)"
+                            com.example.model.AppBypassMode.BYPASS_ALL_EXCEPT_SELECTED -> "Bypass all except selected (${prefs.appBypassSelected.size} apps)"
+                        }
+                        Text(
+                            text = modeLabel,
+                            fontSize = 12.sp,
+                            color = TextSecondary
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Open App Bypass",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }

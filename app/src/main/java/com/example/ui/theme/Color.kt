@@ -14,6 +14,7 @@ val AccentLightBlue = Color(0xFF60A5FA)
 
 val StatusConnected = Color(0xFF10B981)
 val StatusConnecting = Color(0xFFF59E0B)
+val StatusWarning = Color(0xFFF59E0B)
 val StatusDisconnected = Color(0xFF64748B)
 val StatusError = Color(0xFFEF4444)
 

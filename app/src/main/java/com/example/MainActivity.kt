@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.view.Window
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,6 +34,7 @@ import com.example.receiver.VpnActionReceiver
 import com.example.service.V2RayVpnService
 import com.example.ui.MainViewModel
 import com.example.ui.screens.AboutScreen
+import com.example.ui.screens.AppBypassScreen
 import com.example.ui.screens.AutomationScreen
 import com.example.ui.screens.EditServerDialog
 import com.example.ui.screens.HomeScreen
@@ -93,18 +95,18 @@ class MainActivity : ComponentActivity() {
     }
 
     fun requestLocationFlow() {
-        val hasFine = ContextCompat.checkSelfPermission(
-            this,
-            android.Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasFine) {
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    android.Manifest.permission.ACCESS_FINE_LOCATION,
-                    android.Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
+        val perms = mutableListOf(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(android.Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        val missing = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            locationPermissionLauncher.launch(missing.toTypedArray())
         } else {
             checkBackgroundLocationStep()
         }
@@ -122,8 +124,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        requestWindowFeature(Window.FEATURE_NO_TITLE)
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        actionBar?.hide()
         enableEdgeToEdge()
 
         val splashStartTime = System.currentTimeMillis()
@@ -189,6 +193,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToAutomation = { navController.navigate("automation") },
                                 onNavigateToHotspot = { navController.navigate("hotspot") },
                                 onNavigateToBlocking = { navController.navigate("blocking") },
+                                onNavigateToAppBypass = { navController.navigate("app_bypass") },
                                 onNavigateToLogs = { navController.navigate("logs") },
                                 onNavigateToSettings = { navController.navigate("settings") },
                                 onNavigateToAbout = { navController.navigate("about") },
@@ -254,7 +259,14 @@ class MainActivity : ComponentActivity() {
                             SettingsScreen(
                                 viewModel = viewModel,
                                 onNavigateBack = { navController.popBackStack() },
-                                onNavigateToLogs = { navController.navigate("logs") }
+                                onNavigateToLogs = { navController.navigate("logs") },
+                                onNavigateToAppBypass = { navController.navigate("app_bypass") }
+                            )
+                        }
+
+                        composable("app_bypass") {
+                            AppBypassScreen(
+                                onNavigateBack = { navController.popBackStack() }
                             )
                         }
 

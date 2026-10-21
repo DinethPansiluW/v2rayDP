@@ -35,12 +35,19 @@ class NetworkChangeReceiver : BroadcastReceiver() {
             return
         }
 
+        if (action == android.net.wifi.WifiManager.WIFI_STATE_CHANGED_ACTION) {
+            val state = intent.getIntExtra(android.net.wifi.WifiManager.EXTRA_WIFI_STATE, android.net.wifi.WifiManager.WIFI_STATE_UNKNOWN)
+            app.automationManager.onWifiStateChanged(state)
+        }
+
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                withTimeout(8000L) {
+                withTimeout(10000L) {
                     if (action == ACTION_CONNECTIVITY_CALLBACK) {
                         app.automationManager.evaluateNow("system_pending_intent_callback")
+                    } else if (action == android.net.wifi.WifiManager.WIFI_STATE_CHANGED_ACTION) {
+                        app.automationManager.evaluateNow("receiver_wifi_state_changed")
                     } else {
                         app.automationManager.evaluateNow("receiver_$action")
                     }

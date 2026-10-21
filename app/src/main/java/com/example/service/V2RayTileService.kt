@@ -77,6 +77,12 @@ class V2RayTileService : TileService() {
                 tile.subtitle = "Connecting…"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
+            is ConnectionState.Stopping -> {
+                tile.state = Tile.STATE_UNAVAILABLE
+                tile.label = "v2rayDP"
+                tile.subtitle = "Stopping…"
+                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
+            }
             is ConnectionState.Error -> {
                 tile.state = Tile.STATE_INACTIVE
                 tile.label = "v2rayDP"

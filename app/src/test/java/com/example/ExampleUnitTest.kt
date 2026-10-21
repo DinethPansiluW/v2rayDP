@@ -36,4 +36,12 @@ class ExampleUnitTest {
         val isInvalid = raw2 == "<unknown ssid>" || raw2 == "\"<unknown ssid>\""
         assertEquals(true, isInvalid)
     }
+
+    @Test
+    fun appBypassMode_valuesAreValid() {
+        val modeA = com.example.model.AppBypassMode.valueOf("BYPASS_SELECTED")
+        val modeB = com.example.model.AppBypassMode.valueOf("BYPASS_ALL_EXCEPT_SELECTED")
+        assertEquals(com.example.model.AppBypassMode.BYPASS_SELECTED, modeA)
+        assertEquals(com.example.model.AppBypassMode.BYPASS_ALL_EXCEPT_SELECTED, modeB)
+    }
 }

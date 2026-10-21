@@ -4,6 +4,7 @@ import android.net.VpnService
 import com.example.core.proxy.LocalProxyServer
 import com.example.core.vmess.VmessProtocolEngine
 import com.example.core.vpn.VpnTunnelManager
+import com.example.model.AppBypassConfig
 import com.example.model.ConnectionState
 import com.example.model.ServerProfile
 import com.example.model.TrafficStats
@@ -48,7 +49,8 @@ class V2RayCoreManager(
         httpPort: Int = 10809,
         primaryDns: String = "1.1.1.1",
         secondaryDns: String = "8.8.8.8",
-        bypassLan: Boolean = true
+        bypassLan: Boolean = true,
+        appBypassConfig: AppBypassConfig = AppBypassConfig()
     ): Boolean {
         if (_connectionState.value.isRunning) {
             stopCore("Restarting with new profile")
@@ -74,7 +76,14 @@ class V2RayCoreManager(
             // 3. Establish VPN Tunnel (TUN interface)
             updateState(ConnectionState.Connecting(profile.name, "Configuring Android VPN tunnel…"))
             val tunnel = VpnTunnelManager(vpnService)
-            val success = tunnel.establishTunnel(profile, socksPort, primaryDns, secondaryDns, bypassLan)
+            val success = tunnel.establishTunnel(
+                profile = profile,
+                socksPort = socksPort,
+                primaryDns = primaryDns,
+                secondaryDns = secondaryDns,
+                bypassLan = bypassLan,
+                appBypassConfig = appBypassConfig
+            )
             if (!success) {
                 stopCore("Failed to establish TUN interface")
                 updateState(ConnectionState.Error("VPN permission required or TUN creation failed"))

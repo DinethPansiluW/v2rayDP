@@ -94,6 +94,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun requestIgnoreBatteryOptimizations(context: Context) {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null && powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+            showMessage("Battery optimizations are already unrestricted for v2rayDP")
+            return
+        }
+
         try {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = Uri.parse("package:${context.packageName}")
@@ -106,8 +112,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)
-            } catch (e: Exception) {
-                showMessage("Battery settings: ${e.message}")
+            } catch (_: Exception) {
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    showMessage("Battery settings: ${e.message}")
+                }
             }
         }
     }
@@ -211,8 +225,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importMultipleLinks(linksText: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val lines = linksText.lines().map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.isEmpty()) {
+            val allLinks = linksText.lines().flatMap { VmessLinkParser.splitLinks(it) }
+            if (allLinks.isEmpty()) {
                 showMessage("No valid links found in input")
                 return@launch
             }
@@ -223,8 +237,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val toInsert = mutableListOf<ServerProfile>()
             var hadSelected = existing.any { it.isSelected }
 
-            for (line in lines) {
-                val result = VmessLinkParser.parse(line)
+            for (link in allLinks) {
+                val result = VmessLinkParser.parse(link)
                 if (result.isSuccess) {
                     val parsed = result.getOrThrow()
                     val isDuplicate = existing.any {
