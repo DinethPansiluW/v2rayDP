@@ -158,8 +158,9 @@ class V2RayCoreManager(
         val currentConnectionState: StateFlow<ConnectionState>
             get() = com.example.service.V2RayVpnService.serviceState
 
+        @Deprecated("Handled authoritatively by V2RayVpnService.publish", level = DeprecationLevel.WARNING)
         fun setGlobalConnectionState(state: ConnectionState) {
-            // Handled authoritatively by V2RayVpnService
+            // Handled authoritatively by V2RayVpnService.publish
         }
     }
 }

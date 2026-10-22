@@ -112,6 +112,27 @@ import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
+import com.example.model.ButtonPhase
+import com.example.model.ButtonUiState
+import com.example.model.toButtonUiState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private data class DrawerItemData(
@@ -419,7 +440,10 @@ fun HomeScreen(
             ) {
                 when (connectionState) {
                     is ConnectionState.Connected -> StatusBadge("Connected", StatusConnected)
-                    else -> StatusBadge("Disconnected", StatusDisconnected)
+                    is ConnectionState.Connecting -> StatusBadge("Connecting…", AccentCyan)
+                    is ConnectionState.Stopping -> StatusBadge("Stopping…", StatusWarning)
+                    is ConnectionState.Error -> StatusBadge("Error", StatusError)
+                    is ConnectionState.Disconnected -> StatusBadge("Disconnected", StatusDisconnected)
                 }
 
                 if (activeProfile != null) {
@@ -540,67 +564,31 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Start / Stop Button pinned at the bottom
-            val isBusy = connectionState.isBusy
-            val isStopping = connectionState is ConnectionState.Stopping
-            val isConnecting = connectionState is ConnectionState.Connecting
+            val buttonUiState = connectionState.toButtonUiState()
 
-            val buttonBgColor = when {
-                isStopping -> StatusWarning
-                isConnecting -> AccentCyan
-                isRunning -> StatusError
-                else -> StatusConnected
-            }
-            val buttonText = when {
-                isStopping -> "Stopping…"
-                isConnecting -> "Connecting…"
-                isRunning -> "Stop Service"
-                else -> "Start Service"
-            }
-
-            Button(
+            ConnectButton(
+                uiState = buttonUiState,
                 onClick = {
                     snackbarHostState.currentSnackbarData?.dismiss()
-                    if (isRunning) {
-                        viewModel.stopVpn("User tapped stop service")
-                    } else {
-                        onPrepareVpn()
+                    when (buttonUiState.phase) {
+                        ButtonPhase.Connected -> {
+                            viewModel.stopVpn("User tapped stop service")
+                        }
+                        ButtonPhase.Connecting -> {
+                            viewModel.stopVpn("User cancelled connecting")
+                        }
+                        ButtonPhase.Idle, ButtonPhase.Error -> {
+                            onPrepareVpn()
+                        }
+                        ButtonPhase.Stopping -> {
+                            // Ignored (disabled)
+                        }
                     }
                 },
-                enabled = !isBusy,
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .height(56.dp)
-                    .testTag("vpn_toggle_button"),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = buttonBgColor,
-                    contentColor = Color.White,
-                    disabledContainerColor = buttonBgColor.copy(alpha = 0.6f),
-                    disabledContentColor = Color.White.copy(alpha = 0.8f)
-                )
-            ) {
-                if (isBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = buttonText,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-            }
+            )
         }
 
         // SnackbarHost placed in the HomeScreen root Box, aligned BottomCenter,
@@ -875,25 +863,31 @@ private fun AppDrawerHeader(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Live connection status: only Connected or Disconnected
+        val (statusText, statusColor) = when (connectionState) {
+            is ConnectionState.Connected -> "Connected" to StatusConnected
+            is ConnectionState.Connecting -> "Connecting…" to AccentCyan
+            is ConnectionState.Stopping -> "Stopping…" to StatusWarning
+            is ConnectionState.Error -> "Error" to StatusError
+            is ConnectionState.Disconnected -> "Disconnected" to StatusDisconnected
+        }
+
         Row(
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val isConnected = connectionState is ConnectionState.Connected
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .background(
-                        color = if (isConnected) StatusConnected else StatusDisconnected,
+                        color = statusColor,
                         shape = CircleShape
                     )
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = if (isConnected) "Connected" else "Disconnected",
+                text = statusText,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (isConnected) StatusConnected else StatusDisconnected
+                color = statusColor
             )
         }
 
@@ -907,5 +901,180 @@ private fun AppDrawerHeader(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+@Composable
+fun ConnectButton(
+    uiState: ButtonUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    var lastClickTime by remember { mutableStateOf(0L) }
+
+    val isEnabled = uiState.phase != ButtonPhase.Stopping
+
+    val targetBgColor = when (uiState.phase) {
+        ButtonPhase.Idle -> StatusConnected
+        ButtonPhase.Connecting -> AccentCyan
+        ButtonPhase.Connected -> StatusError
+        ButtonPhase.Stopping -> StatusWarning
+        ButtonPhase.Error -> StatusConnected
+    }
+
+    val animatedBgColor by animateColorAsState(
+        targetValue = targetBgColor,
+        animationSpec = tween(durationMillis = 300),
+        label = "button_bg_color"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse_transition")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 750, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_alpha"
+    )
+
+    val buttonAlpha = when (uiState.phase) {
+        ButtonPhase.Connecting -> pulseAlpha
+        ButtonPhase.Stopping -> 0.85f
+        else -> 1.0f
+    }
+
+    var connectingElapsedSec by remember { mutableStateOf(0L) }
+    LaunchedEffect(uiState.phase) {
+        if (uiState.phase == ButtonPhase.Connecting) {
+            val start = android.os.SystemClock.elapsedRealtime()
+            while (isActive) {
+                delay(1000L)
+                connectingElapsedSec = (android.os.SystemClock.elapsedRealtime() - start) / 1000L
+            }
+        } else {
+            connectingElapsedSec = 0L
+        }
+    }
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Button(
+            onClick = {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastClickTime < 400L) return@Button
+                lastClickTime = now
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            },
+            enabled = isEnabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .graphicsLayer { alpha = buttonAlpha }
+                .testTag("vpn_toggle_button"),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = animatedBgColor,
+                contentColor = Color.White,
+                disabledContainerColor = animatedBgColor.copy(alpha = 0.85f),
+                disabledContentColor = Color.White.copy(alpha = 0.9f)
+            )
+        ) {
+            AnimatedContent(
+                targetState = uiState,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(180))
+                },
+                label = "button_content"
+            ) { targetState ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier.size(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            when (targetState.phase) {
+                                ButtonPhase.Connecting, ButtonPhase.Stopping -> {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                }
+                                ButtonPhase.Connected -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Stop,
+                                        contentDescription = "Stop",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                ButtonPhase.Idle, ButtonPhase.Error -> {
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = "Start",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = when (targetState.phase) {
+                                ButtonPhase.Idle -> "Start Service"
+                                ButtonPhase.Connecting -> "Connecting…"
+                                ButtonPhase.Connected -> "Stop Service"
+                                ButtonPhase.Stopping -> "Stopping…"
+                                ButtonPhase.Error -> "Start Service"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = Color.White
+                        )
+                    }
+
+                    if (targetState.phase == ButtonPhase.Connecting) {
+                        val hint = if (connectingElapsedSec >= 3L) "Tap to cancel" else targetState.stepText
+                        if (!hint.isNullOrBlank()) {
+                            Text(
+                                text = hint,
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.9f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (uiState.phase == ButtonPhase.Error && !uiState.errorMessage.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = uiState.errorMessage,
+                color = StatusError,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp)
+            )
+        }
     }
 }

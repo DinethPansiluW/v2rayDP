@@ -32,6 +32,31 @@ sealed class ConnectionState {
         get() = this is Connecting || this is Stopping
 }
 
+enum class ButtonPhase {
+    Idle,
+    Connecting,
+    Connected,
+    Stopping,
+    Error
+}
+
+data class ButtonUiState(
+    val phase: ButtonPhase,
+    val stepText: String? = null,
+    val errorMessage: String? = null
+)
+
+fun ConnectionState.toButtonUiState(): ButtonUiState {
+    return when (this) {
+        is ConnectionState.Connected -> ButtonUiState(ButtonPhase.Connected)
+        is ConnectionState.Connecting -> ButtonUiState(ButtonPhase.Connecting, stepText = this.step)
+        is ConnectionState.Stopping -> ButtonUiState(ButtonPhase.Stopping, stepText = this.reason)
+        is ConnectionState.Error -> ButtonUiState(ButtonPhase.Error, errorMessage = this.message)
+        is ConnectionState.Disconnected -> ButtonUiState(ButtonPhase.Idle)
+    }
+}
+
+
 data class TrafficStats(
     val uploadSpeedBps: Long = 0,
     val downloadSpeedBps: Long = 0,

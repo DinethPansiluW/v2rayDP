@@ -146,22 +146,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Clear manual override when user explicitly starts VPN
             prefsRepo.clearManualOverride()
             val id = profileId ?: activeProfile.value?.id
-            // Perform ping test when user presses Start service
-            val target = if (id != null) allProfiles.value.find { it.id == id } ?: activeProfile.value else activeProfile.value
-            if (target != null) {
-                testProfileLatency(target)
-            }
             V2RayVpnService.start(getApplication(), id, isAutomated = false)
         }
     }
 
     fun stopVpn(reason: String = "User pressed stop in app") {
         viewModelScope.launch {
-            // Pause automation on this network until network actually switches
-            val netKey = automationManager.getCurrentNetworkKey()
-            prefsRepo.setManualOverride(reason, netKey)
-            prefsRepo.clearStoppedByPolicy()
-            V2RayVpnService.stop(getApplication(), reason, isAutomated = false)
+            try {
+                // Pause automation on this network until network actually switches
+                val netKey = automationManager.getCurrentNetworkKey()
+                prefsRepo.setManualOverride(reason, netKey)
+                prefsRepo.clearStoppedByPolicy()
+                V2RayVpnService.stop(getApplication(), reason, isAutomated = false)
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Error stopping VPN: ${e.message}")
+            }
         }
     }
 
