@@ -1,27 +1,45 @@
 # 🚀 v2rayDP Desktop
 
-A Windows desktop application built with **Electron**, **React**, **TypeScript**, and **Vite**[cite: 1, 2].
+A modern Windows desktop VPN client built with **Electron**, **React**, **TypeScript**, and **Vite**. Powered by **sing-box**, it combines profile management, SSID-based auto-connect rules, split tunneling, VPN hotspot sharing, DNS-level ad & threat blocking, and detailed bandwidth analytics in a clean dark interface.
 
-## 📸 Screenshots
+---
 
-| Overview | Additional Views |
+### 📸 Screenshots
+
+| Home Dashboard | Master Automation Engine |
 | :---: | :---: |
-| ![Screenshot 1](screenshots/1.png)[cite: 2] | ![Screenshot 2](screenshots/2.png)[cite: 2] |
-| ![Screenshot 3](screenshots/3.png)[cite: 2] | ![Screenshot 4](screenshots/4.png)[cite: 2] |
-| ![Screenshot 5](screenshots/5.png)[cite: 2] | ![Screenshot 6](screenshots/6.png)[cite: 2] |
-| ![Screenshot 7](screenshots/7.png)[cite: 2] | |
+| ![Home Dashboard](screenshots/1.png) | ![Master Automation Engine](screenshots/2.png) |
+| **Home Dashboard** — Real-time download/upload speeds, session data, latency, VLESS/WS/TLS profiles & live engine logs | **Network Automation** — Auto-connect/disconnect rules based on active Wi-Fi SSID or LAN connections |
 
-## ✨ What This App Does
+| Exclude & Split Tunneling | Hotspot & Local Network Sharing |
+| :---: | :---: |
+| ![Exclude & Split Tunneling](screenshots/3.png) | ![Hotspot & Local Network Sharing](screenshots/4.png) |
+| **Exclude & Split Tunneling** — Per-network bypass rules, LAN bypass, QUIC (UDP 443) blocking & 1-click domain presets | **Hotspot & Network Sharing** — Share VPN via Direct ICS TUN bridging or local SOCKS5/HTTP proxy (`10808`) |
 
-* 🔗 **Proxy Link & Config Support**: Parses proxy/VMess links and handles configuration options for your setup[cite: 1].
-* 🛡️ **Ad & Domain Blocking**: Normalizes domains and manages blocklist sources to block unwanted domains/ads[cite: 1].
-* 🔀 **Split Tunneling**: Configures exclusions and traffic routing rules so selected apps or targets are handled separately[cite: 1].
-* 📡 **Hotspot Controls**: Manages hotspot settings and controls right from the desktop app[cite: 1].
-* 📱 **Phone Import**: Imports items from a phone using local server and QR modal workflows[cite: 1].
-* 🤖 **Automation & System Guard**: Evaluates automation rules and monitors battery status, running processes, app freezes, window restoration, and system recovery[cite: 1].
-* 📊 **Usage Analytics**: Aggregates and displays usage metrics across the dashboard and usage views[cite: 1].
-* 🖥️ **Windows Integration & Packaging**: Includes Windows networking and elevation scripts, startup task scheduling, and installer packaging support[cite: 1].
+| DNS Ad & Threat Blocking | Data Usage Analytics |
+| :---: | :---: |
+| ![DNS Ad & Threat Blocking](screenshots/5.png) | ![Data Usage Analytics](screenshots/6.png) |
+| **DNS Ad & Threat Blocking** — Fast-fail NXDOMAIN blocking with 66,000+ domains, tracker/ad filtering & strict mode | **Data Usage Analytics** — Daily, monthly & custom-range RX/TX charts, peak usage stats & CSV export |
 
-## ⚠️ Disclaimer
+| Application & Battery Settings | |
+| :---: | :---: |
+| ![Application & Battery Settings](screenshots/7.png) | |
+| **Settings & Power Management** — Windows startup task, system tray behavior, Battery Saver Mode & low-battery auto-exit | |
 
-Use this project responsibly and only in accordance with applicable laws, network policies, and terms of service.
+---
+
+### ✨ Key Features
+
+* ⚡ **Dashboard & Profile Management**: Monitor live download/upload speeds, session usage, connection duration, and server latency (`ms`) while managing VLESS/VMess profiles with quick QR code, clipboard, and phone-import actions.
+* 🤖 **Master Automation Engine**: Automatically triggers VPN actions (`Connect VPN`, `Do not connect`, etc.) using priority-ordered Wi-Fi SSID and LAN rules with fallback handling.
+* 🔀 **Exclude & Split Tunneling**: Route selected apps, local LAN devices, or specific domains directly outside the VPN tunnel, complete with per-Wi-Fi rule profiles, QUIC (UDP 443) blocking, and 1-click presets (YouTube & CDN, Netflix, Spotify, Twitch, Local TLDs).
+* 📡 **Hotspot & Local Network Sharing**: Share your encrypted VPN connection with phones, consoles, and smart TVs via **Direct ICS TUN Bridging** or a local **SOCKS5/HTTP Proxy** on port `10808`, with built-in diagnostics, auto-start, and disconnect recovery.
+* 🛡️ **DNS Ad & Threat Blocking**: Block ads, telemetry trackers, and phishing/malware domains at the DNS & TUN layer via sing-box fast-fail (`NXDOMAIN`) with offline-seeded lists, live sinkhole counters, and optional Strict Mode.
+* 📊 **Detailed Data Usage Analytics**: Track RX/TX bandwidth consumption across Today, Day, Month, Year, or Custom Ranges with daily averages, peak usage highlights, visual bar charts, and one-click CSV export.
+* 🔋 **System Tray & Battery Saver Controls**: Launch silently on Windows startup via Task Scheduler, keep the VPN running in the system tray on close, enable Battery Saver Mode (pauses auto-latency checks, reduces polling, disables animations), and set a low-battery auto-exit threshold.
+
+---
+
+### ⚠️ Disclaimer
+
+Use this software responsibly and only in accordance with applicable laws, network policies, and service terms.
